@@ -1,30 +1,18 @@
-from typing import List
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from app.core.config import settings
 
-genai.configure(api_key=settings.GOOGLE_API_KEY)
+client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 
-
-def get_embedding(text: str) -> List[float]:
-    result = genai.embed_content(
-        model=settings.EMBEDDING_MODEL,
-        content=text,
-        task_type="retrieval_document"
+def get_embedding(text: str):
+    result = client.models.embed_content(
+        model="models/text-embedding-004",
+        contents=text
     )
-    return result["embedding"]
+    return result.embeddings[0].values
 
+def get_query_embedding(text: str):
+    return get_embedding(text)
 
-def get_query_embedding(text: str) -> List[float]:
-    result = genai.embed_content(
-        model=settings.EMBEDDING_MODEL,
-        content=text,
-        task_type="retrieval_query"
-    )
-    return result["embedding"]
-
-
-def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
-    embeddings = []
-    for text in texts:
-        embeddings.append(get_embedding(text))
-    return embeddings
+def get_embeddings_batch(texts):
+    return [get_embedding(t) for t in texts]

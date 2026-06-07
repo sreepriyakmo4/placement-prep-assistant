@@ -1,13 +1,13 @@
-from typing import TypedDict, List, Optional, Annotated
+from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
-import google.generativeai as genai
+from google import genai
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.retrieval.embeddings import get_query_embedding
 from app.retrieval.faiss_store import get_faiss_store
 from app.db.models import Chunk, Document
 
-genai.configure(api_key=settings.GOOGLE_API_KEY)
+_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 
 
 class AgentState(TypedDict):
@@ -107,8 +107,10 @@ USER QUERY: {query}
 Provide your response now:
 """
 
-    model = genai.GenerativeModel(settings.GEMINI_MODEL)
-    response = model.generate_content(prompt)
+    response = _client.models.generate_content(
+        model=settings.GEMINI_MODEL,
+        contents=prompt
+    )
     answer = response.text
 
     sources = [

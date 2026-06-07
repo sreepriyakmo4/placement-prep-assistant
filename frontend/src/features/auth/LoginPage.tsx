@@ -23,7 +23,7 @@ export default function LoginPage() {
       const fn = mode === 'login' ? authApi.login : authApi.register
       const data = await fn(email, password)
       login(data.access_token, data.user_id, data.email)
-      navigate('/dashboard')
+      navigate('/chat')
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Something went wrong')
     } finally {

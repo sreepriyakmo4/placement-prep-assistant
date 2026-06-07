@@ -14,6 +14,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/chat" replace /> : <LoginPage />} />
       <Route path="/chat" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
+      <Route path="/dashboard" element={<Navigate to="/chat" replace />} />
       <Route path="/" element={<Navigate to={user ? '/chat' : '/login'} replace />} />
     </Routes>
   )
