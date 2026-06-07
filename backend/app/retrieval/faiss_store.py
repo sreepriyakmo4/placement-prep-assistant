@@ -10,7 +10,7 @@ class FAISSStore:
     def __init__(self):
         self.index_path = settings.FAISS_INDEX_PATH
         self.index: faiss.IndexFlatL2 = None
-        self.id_map: List[int] = []  # maps faiss position -> db chunk id
+        self.id_map: List[int] = []
         self._load_or_create()
 
     def _load_or_create(self):
@@ -22,7 +22,7 @@ class FAISSStore:
             with open(map_file, "rb") as f:
                 self.id_map = pickle.load(f)
         else:
-            self.index = faiss.IndexFlatL2(768)  # Gemini embedding dim
+            self.index = faiss.IndexFlatL2(384)  # MiniLM dim
             self.id_map = []
 
     def save(self):
@@ -52,7 +52,6 @@ class FAISSStore:
 
 
 _faiss_store: FAISSStore = None
-
 
 def get_faiss_store() -> FAISSStore:
     global _faiss_store

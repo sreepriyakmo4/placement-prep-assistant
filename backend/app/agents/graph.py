@@ -1,13 +1,13 @@
 from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
-from google import genai
+from groq import Groq
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.retrieval.embeddings import get_query_embedding
 from app.retrieval.faiss_store import get_faiss_store
 from app.db.models import Chunk, Document
 
-_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+_client = Groq(api_key=settings.GROQ_API_KEY)
 
 
 class AgentState(TypedDict):
@@ -22,7 +22,6 @@ class AgentState(TypedDict):
 def intent_router(state: AgentState) -> AgentState:
     query = state["query"].lower()
     intent = "qa"
-
     explain_keywords = ["explain", "how does", "what is", "describe", "elaborate", "detail"]
     quiz_keywords = ["quiz", "mcq", "multiple choice", "test me", "questions on", "generate questions"]
     interview_keywords = ["interview", "ask me", "interviewer", "prepare me", "mock interview"]
@@ -44,6 +43,9 @@ def retrieval_node(state: AgentState, db: Session) -> AgentState:
 
     chunks_data = []
     for chunk_db_id, distance in results:
+        # Filter out irrelevant chunks using distance threshold
+        if distance > 1.5:
+            continue
         chunk = db.query(Chunk).filter(Chunk.id == chunk_db_id).first()
         if chunk:
             doc = db.query(Document).filter(Document.id == chunk.document_id).first()
@@ -62,56 +64,59 @@ def response_node(state: AgentState) -> AgentState:
     query = state["query"]
     chunks = state["retrieved_chunks"]
 
-    context = "\n\n".join([
-        f"[Source: {c['filename']}, Chunk #{c['chunk_index']}]\n{c['content']}"
-        for c in chunks
-    ])
-
     history_text = ""
     if state.get("chat_history"):
         recent = state["chat_history"][-6:]
         history_text = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in recent])
 
+    if chunks:
+        context = "\n\n".join([
+            f"[Source: {c['filename']}, Chunk #{c['chunk_index']}]\n{c['content']}"
+            for c in chunks
+        ])
+        context_instruction = (
+            "You have relevant content from the student's uploaded study materials. "
+            "Base your answer primarily on this content. "
+            "At the very beginning of your response, add this line exactly: "
+            "'📚 *Answer based on your uploaded documents.*'\n"
+        )
+    else:
+        context = ""
+        context_instruction = (
+            "No relevant content was found in the student's uploaded study materials for this query. "
+            "Answer from your general knowledge. "
+            "At the very beginning of your response, add this line exactly: "
+            "'🌐 *Answer from general knowledge (not found in your uploaded documents).*'\n"
+        )
+
     system_prompts = {
-        "qa": (
-            "You are a placement preparation assistant. Give a concise, accurate answer "
-            "based on the provided context. Be direct and to the point."
-        ),
-        "explain": (
-            "You are a placement preparation tutor. Provide a thorough explanation with: "
-            "1) Clear definition 2) How it works 3) Real-world examples 4) Interview tips. "
-            "Make it comprehensive and educational."
-        ),
-        "quiz": (
-            "You are a placement preparation quiz generator. Create exactly 5 MCQs based on "
-            "the context. Format: Q1. [question]\nA) ...\nB) ...\nC) ...\nD) ...\n\n"
-            "At the end, provide ANSWERS: Q1-X, Q2-X, Q3-X, Q4-X, Q5-X"
-        ),
-        "interview": (
-            "You are an interviewer conducting a technical placement interview. Ask 4-5 "
-            "interview questions on the topic, starting easy and gradually increasing difficulty. "
-            "Format as a real interviewer would. After the questions, provide what a good answer would cover."
-        ),
+        "qa": "You are a placement preparation assistant. Give a concise, accurate answer. Be direct and to the point.",
+        "explain": "You are a placement preparation tutor. Provide a thorough explanation with: 1) Clear definition 2) How it works 3) Real-world examples 4) Interview tips.",
+        "quiz": "You are a placement preparation quiz generator. Create exactly 5 MCQs. Format: Q1. [question]\nA) ...\nB) ...\nC) ...\nD) ...\n\nAt the end: ANSWERS: Q1-X, Q2-X, Q3-X, Q4-X, Q5-X",
+        "interview": "You are an interviewer conducting a technical placement interview. Ask 4-5 questions starting easy and increasing difficulty.",
     }
 
-    prompt = f"""
-{system_prompts.get(intent, system_prompts['qa'])}
+    user_message = f"""{context_instruction}
 
 CONTEXT FROM STUDY MATERIALS:
-{context if context else "No specific context found. Answer from general knowledge."}
+{context if context else "No relevant content found in uploaded documents."}
 
 {"CHAT HISTORY:" + chr(10) + history_text if history_text else ""}
 
 USER QUERY: {query}
 
-Provide your response now:
-"""
+Provide your response now:"""
 
-    response = _client.models.generate_content(
-        model=settings.GEMINI_MODEL,
-        contents=prompt
+    response = _client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": system_prompts.get(intent, system_prompts["qa"])},
+            {"role": "user", "content": user_message},
+        ],
+        max_tokens=2048,
+        temperature=0.7,
     )
-    answer = response.text
+    answer = response.choices[0].message.content
 
     sources = [
         {"filename": c["filename"], "chunk_number": c["chunk_index"]}
@@ -123,16 +128,13 @@ Provide your response now:
 
 def build_graph(db: Session):
     workflow = StateGraph(AgentState)
-
     workflow.add_node("intent_router", intent_router)
     workflow.add_node("retrieval_node", lambda s: retrieval_node(s, db))
     workflow.add_node("response_node", response_node)
-
     workflow.set_entry_point("intent_router")
     workflow.add_edge("intent_router", "retrieval_node")
     workflow.add_edge("retrieval_node", "response_node")
     workflow.add_edge("response_node", END)
-
     return workflow.compile()
 
 
