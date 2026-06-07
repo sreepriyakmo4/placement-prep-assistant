@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: #0f0f13;
+  color: #e8e8f0;
+  font-family: 'DM Sans', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #16161d;
+}
+::-webkit-scrollbar-thumb {
+  background: #2e2e3d;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #7c6af7;
+}
+
+.markdown-body p { margin: 0.6em 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 1.4em; margin: 0.5em 0; }
+.markdown-body li { margin: 0.25em 0; }
+.markdown-body code {
+  background: #1e1e28;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.88em;
+  color: #00e5a0;
+}
+.markdown-body pre {
+  background: #16161d;
+  border: 1px solid #2e2e3d;
+  border-radius: 8px;
+  padding: 1em;
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+  color: #c9d1d9;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  font-family: 'Syne', sans-serif;
+  color: #e8e8f0;
+  margin: 1em 0 0.4em;
+}
+.markdown-body strong { color: #c4b5fd; }
+.markdown-body blockquote {
+  border-left: 3px solid #7c6af7;
+  margin: 0.8em 0;
+  padding-left: 1em;
+  color: #a0a0b8;
+}
