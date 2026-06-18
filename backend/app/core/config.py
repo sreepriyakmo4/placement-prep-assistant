@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     FAISS_INDEX_PATH: str = "./faiss_index"
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    CHUNK_SIZE: int = 500
-    CHUNK_OVERLAP: int = 50
+    CHUNK_SIZE: int = 800
+    CHUNK_OVERLAP: int = 150
     TOP_K_CHUNKS: int = 5
 
     class Config:

@@ -1,8 +1,8 @@
 import React, { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { authApi } from '../../lib/api'
 import { useAuth } from './AuthContext'
-import { BookOpen, Sparkles, ArrowRight, Loader2 } from 'lucide-react'
+import { BookOpen, Sparkles, ArrowRight, Loader2, Mail, Lock, Eye, EyeOff } from 'lucide-react'
 
 type Mode = 'login' | 'register'
 
@@ -10,6 +10,7 @@ export default function LoginPage() {
   const [mode, setMode] = useState<Mode>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const { login } = useAuth()
@@ -18,6 +19,12 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
+
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters')
+      return
+    }
+
     setLoading(true)
     try {
       const fn = mode === 'login' ? authApi.login : authApi.register
@@ -25,7 +32,14 @@ export default function LoginPage() {
       login(data.access_token, data.user_id, data.email)
       navigate('/chat')
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Something went wrong')
+      const detail = err.response?.data?.detail
+      if (detail === 'Email already registered') {
+        setError('This email is already registered. Please sign in instead.')
+      } else if (detail === 'Invalid credentials') {
+        setError('Incorrect email or password. Please try again.')
+      } else {
+        setError(detail || 'Something went wrong. Please try again.')
+      }
     } finally {
       setLoading(false)
     }
@@ -43,15 +57,15 @@ export default function LoginPage() {
           <div className="w-10 h-10 bg-accent rounded-xl flex items-center justify-center">
             <BookOpen size={20} className="text-white" />
           </div>
-          <span className="font-display text-xl font-700 text-white tracking-tight">PlacementAI</span>
+          <span className="font-display text-xl font-bold text-white tracking-tight">PlacementAI</span>
         </div>
 
         <div className="relative">
           <div className="inline-flex items-center gap-2 bg-accent/10 border border-accent/30 rounded-full px-4 py-2 mb-6">
             <Sparkles size={14} className="text-accent" />
-            <span className="text-xs text-accent font-medium">Powered by Gemini + LangGraph</span>
+            <span className="text-xs text-accent font-medium">Powered by Groq LLaMA + LangGraph</span>
           </div>
-          <h1 className="font-display text-5xl font-800 text-white leading-tight mb-4">
+          <h1 className="font-display text-5xl font-bold text-white leading-tight mb-4">
             Ace your<br />
             <span className="text-accent">placement</span><br />
             interviews.
@@ -82,49 +96,72 @@ export default function LoginPage() {
             <div className="w-9 h-9 bg-accent rounded-xl flex items-center justify-center">
               <BookOpen size={18} className="text-white" />
             </div>
-            <span className="font-display text-xl font-700 text-white">PlacementAI</span>
+            <span className="font-display text-xl font-bold text-white">PlacementAI</span>
           </div>
 
-          <h2 className="font-display text-3xl font-700 text-white mb-2">
+          <h2 className="font-display text-3xl font-bold text-white mb-1">
             {mode === 'login' ? 'Welcome back' : 'Create account'}
           </h2>
           <p className="text-gray-400 mb-8 text-sm">
             {mode === 'login'
               ? 'Sign in to continue your prep journey'
-              : 'Join thousands of students preparing smarter'}
+              : 'Start preparing smarter today'}
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Email */}
             <div>
-              <label className="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                required
-                className="w-full bg-surface-2 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all text-sm"
-                placeholder="you@example.com"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                minLength={6}
-                className="w-full bg-surface-2 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all text-sm"
-                placeholder="••••••••"
-              />
+              <label className="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">
+                Email Address
+              </label>
+              <div className="relative">
+                <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  required
+                  className="w-full bg-surface-2 border border-white/10 rounded-xl pl-10 pr-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all text-sm"
+                  placeholder="you@example.com"
+                />
+              </div>
             </div>
 
+            {/* Password */}
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">
+                Password
+              </label>
+              <div className="relative">
+                <Lock size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                  minLength={6}
+                  className="w-full bg-surface-2 border border-white/10 rounded-xl pl-10 pr-10 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all text-sm"
+                  placeholder={mode === 'register' ? 'Min. 6 characters' : '••••••••'}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(v => !v)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+
+            {/* Error */}
             {error && (
-              <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm">
-                {error}
+              <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm flex items-start gap-2">
+                <span className="mt-0.5">⚠️</span>
+                <span>{error}</span>
               </div>
             )}
 
+            {/* Submit */}
             <button
               type="submit"
               disabled={loading}
@@ -144,11 +181,15 @@ export default function LoginPage() {
           <p className="text-center text-gray-500 text-sm mt-6">
             {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
             <button
-              onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }}
+              onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); setPassword('') }}
               className="text-accent hover:text-accent-dim font-medium transition-colors"
             >
-              {mode === 'login' ? 'Sign up' : 'Sign in'}
+              {mode === 'login' ? 'Sign up for free' : 'Sign in'}
             </button>
+          </p>
+
+          <p className="text-center text-gray-600 text-xs mt-4">
+            Your data is private and tied to your account
           </p>
         </div>
       </div>

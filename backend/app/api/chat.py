@@ -65,7 +65,7 @@ def query(
         db.commit()
         db.refresh(session)
 
-    # Build chat history from existing messages
+    # Build chat history
     existing_messages = db.query(Message).filter(
         Message.session_id == session.id
     ).order_by(Message.created_at).all()
@@ -77,8 +77,13 @@ def query(
     db.add(user_msg)
     db.commit()
 
-    # Run agent
-    result = run_agent(body.query, chat_history, db)
+    # Run agent — now passes user_id for per-user FAISS filtering
+    result = run_agent(
+        query=body.query,
+        chat_history=chat_history,
+        db=db,
+        user_id=current_user.id,
+    )
 
     # Save assistant message
     assistant_msg = Message(

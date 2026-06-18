@@ -159,7 +159,7 @@ placement-prep/
 │   │   ├── core/
 │   │   │   ├── config.py        # Pydantic settings
 │   │   │   └── security.py      # JWT & password hashing
-│   │   └── main.py              # FastAPI app entry point
+│   │   └── main.py               # FastAPI app entry point
 │   ├── alembic/                 # Database migrations
 │   ├── requirements.txt
 │   └── Dockerfile

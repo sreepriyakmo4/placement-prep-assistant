@@ -47,29 +47,6 @@ function ThinkingDots() {
   )
 }
 
-function SourceBadge({ sources }: { sources: string }) {
-  let parsed: { filename: string; chunk_number: number }[] = []
-  try { parsed = JSON.parse(sources) } catch {}
-  if (!parsed.length) return null
-
-  return (
-    <div className="mt-3 pt-3 border-t border-white/5">
-      <p className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">Sources</p>
-      <div className="flex flex-wrap gap-1.5">
-        {parsed.map((s, i) => (
-          <span
-            key={i}
-            className="inline-flex items-center gap-1.5 bg-surface-3 border border-white/5 rounded-lg px-2.5 py-1 text-xs text-gray-400"
-          >
-            <FileText size={10} className="text-accent" />
-            {s.filename} #{s.chunk_number}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 export default function ChatPage() {
   const { user, logout } = useAuth()
   const qc = useQueryClient()
