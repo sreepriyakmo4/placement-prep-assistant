@@ -31,7 +31,7 @@ export default function DashboardPage() {
 
   const { data: docs = [], isLoading } = useQuery({
     queryKey: ['documents'],
-    queryFn: () => documentsApi.list().then(r => r.data),
+    queryFn: documentsApi.list,
     refetchInterval: 5000, // poll for status updates
   })
 

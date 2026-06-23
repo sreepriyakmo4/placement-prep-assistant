@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import DocumentsPanel from '../documents/DocumentsPanel'
 import { formatDate } from '../../lib/utils'
+import { SourceBadge } from './SourceBadge'
 
 interface Message {
   id: number
