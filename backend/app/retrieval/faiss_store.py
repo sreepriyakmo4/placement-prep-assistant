@@ -2,26 +2,26 @@ import faiss
 import numpy as np
 import os
 import pickle
+import logging
 from typing import List, Tuple, Dict, Any
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class FAISSStore:
     """
-    FAISS store that maps vector index positions to chunk metadata.
-    
-    Key improvement over the old version:
-    - Stores full metadata (user_id, document_id, chunk_index, filename, page_num, heading)
-      alongside each vector so retrieval_node never needs a separate DB lookup
-      just to know what document a chunk belongs to.
-    - Supports per-user filtering so User A's notes never bleed into User B's answers.
-    - Returns (distance, metadata) tuples instead of (chunk_db_id, distance).
+    FAISS vector store with per-user filtering and cosine similarity search.
+
+    Uses IndexFlatIP (inner product) on L2-normalised vectors,
+    which is mathematically equivalent to cosine similarity.
+    Scores range from 0.0 (no similarity) to 1.0 (identical).
     """
 
     def __init__(self):
         self.index_path = settings.FAISS_INDEX_PATH
-        self.index: faiss.IndexFlatIP = None   # Inner product on L2-normalised vectors = cosine similarity
-        self.metadata: List[Dict[str, Any]] = []  # parallel list to index positions
+        self.index: faiss.IndexFlatIP = None
+        self.metadata: List[Dict[str, Any]] = []
         self._load_or_create()
 
     def _load_or_create(self):
@@ -30,22 +30,37 @@ class FAISSStore:
         meta_file = os.path.join(self.index_path, "metadata.pkl")
 
         if os.path.exists(idx_file) and os.path.exists(meta_file):
-            self.index = faiss.read_index(idx_file)
-            with open(meta_file, "rb") as f:
-                self.metadata = pickle.load(f)
+            try:
+                self.index = faiss.read_index(idx_file)
+                with open(meta_file, "rb") as f:
+                    self.metadata = pickle.load(f)
+                logger.info(
+                    f"FAISS loaded: {self.index.ntotal} vectors "
+                    f"from {self.index_path}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to load FAISS index, creating fresh: {e}")
+                self._create_fresh()
         else:
-            # 384-dim for all-MiniLM-L6-v2
-            # IndexFlatIP with L2-normalised vectors gives cosine similarity
-            self.index = faiss.IndexFlatIP(384)
-            self.metadata = []
+            self._create_fresh()
+
+    def _create_fresh(self):
+        # 384-dim for all-MiniLM-L6-v2
+        self.index = faiss.IndexFlatIP(384)
+        self.metadata = []
+        logger.info("FAISS: created fresh IndexFlatIP(384)")
 
     def save(self):
-        faiss.write_index(
-            self.index,
-            os.path.join(self.index_path, "index.bin")
-        )
-        with open(os.path.join(self.index_path, "metadata.pkl"), "wb") as f:
-            pickle.dump(self.metadata, f)
+        try:
+            faiss.write_index(
+                self.index,
+                os.path.join(self.index_path, "index.bin")
+            )
+            with open(os.path.join(self.index_path, "metadata.pkl"), "wb") as f:
+                pickle.dump(self.metadata, f)
+        except Exception as e:
+            logger.error(f"FAISS save failed: {e}")
+            raise
 
     def add_embeddings(
         self,
@@ -53,17 +68,18 @@ class FAISSStore:
         metadata_list: List[Dict[str, Any]],
     ) -> List[int]:
         """
-        Add embeddings with their metadata.
-        metadata_list items should contain:
-          user_id, document_id, chunk_db_id, chunk_index,
-          filename, page_num, heading, content_preview
-        Returns list of faiss positions assigned.
+        Add embeddings + metadata. Normalises vectors to unit length
+        so IndexFlatIP gives cosine similarity scores.
+        Returns list of FAISS positions assigned.
         """
+        if not embeddings:
+            return []
+
         vectors = np.array(embeddings, dtype=np.float32)
 
-        # L2-normalise so IndexFlatIP gives cosine similarity (score 0-1)
+        # Normalise to unit vectors for cosine similarity
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1, norms)
+        norms = np.where(norms == 0, 1.0, norms)
         vectors = vectors / norms
 
         start_pos = self.index.ntotal
@@ -72,6 +88,11 @@ class FAISSStore:
         faiss_ids = list(range(start_pos, start_pos + len(embeddings)))
         self.metadata.extend(metadata_list)
         self.save()
+
+        logger.info(
+            f"FAISS: added {len(embeddings)} vectors. "
+            f"Total now: {self.index.ntotal}"
+        )
         return faiss_ids
 
     def search(
@@ -79,32 +100,41 @@ class FAISSStore:
         query_embedding: List[float],
         top_k: int = 5,
         user_id: int = None,
-        min_score: float = 0.35,   # cosine similarity threshold (0-1)
+        min_score: float = 0.15,
     ) -> List[Tuple[float, Dict[str, Any]]]:
         """
         Search FAISS index.
-        Returns list of (similarity_score, metadata) tuples,
-        filtered by user_id and min_score, sorted by score descending.
-        
-        similarity_score is cosine similarity (higher = more relevant).
-        0.35 threshold keeps only chunks with at least moderate relevance.
+        Returns (similarity_score, metadata) tuples sorted best-first.
+
+        min_score=0.15 is intentionally low — short technical questions
+        ("what is deadlock?") often score 0.15–0.28 against relevant chunks.
+        The LLM prompt handles quality filtering by using only what's relevant.
         """
         if self.index.ntotal == 0:
+            logger.warning("FAISS search called but index is empty!")
             return []
 
         vector = np.array([query_embedding], dtype=np.float32)
 
-        # L2-normalise query too
+        # Normalise query vector too
         norm = np.linalg.norm(vector)
         if norm > 0:
             vector = vector / norm
 
-        # Fetch more candidates if filtering by user_id
-        fetch_k = min(top_k * 6 if user_id else top_k * 2, self.index.ntotal)
+        # Fetch extra candidates when filtering by user to ensure top_k results
+        fetch_k = min(
+            top_k * 10 if user_id else top_k * 3,
+            self.index.ntotal
+        )
         scores, indices = self.index.search(vector, fetch_k)
 
+        logger.debug(
+            f"FAISS raw search: fetched {fetch_k} candidates, "
+            f"top score={scores[0][0]:.4f} for user={user_id}"
+        )
+
         results = []
-        seen_content = set()  # deduplicate near-identical chunks
+        seen_previews = set()
 
         for score, idx in zip(scores[0], indices[0]):
             if idx < 0 or idx >= len(self.metadata):
@@ -117,30 +147,30 @@ class FAISSStore:
             meta = self.metadata[idx]
 
             # Per-user filtering
-            if user_id and meta.get("user_id") != user_id:
+            if user_id is not None and meta.get("user_id") != user_id:
                 continue
 
-            # Deduplicate: skip if very similar content already added
-            preview = meta.get("content_preview", "")[:100]
-            if preview in seen_content:
+            # Deduplicate near-identical chunks
+            preview_key = meta.get("content_preview", "")[:80]
+            if preview_key in seen_previews:
                 continue
-            seen_content.add(preview)
+            seen_previews.add(preview_key)
 
             results.append((similarity, meta))
 
             if len(results) >= top_k:
                 break
 
-        # Sort by similarity descending (best first)
         results.sort(key=lambda x: x[0], reverse=True)
+
+        logger.info(
+            f"FAISS search: user={user_id}, returned {len(results)} chunks, "
+            f"scores={[round(r[0],3) for r in results]}"
+        )
         return results
 
     def delete_by_document(self, document_id: int):
-        """
-        Remove all vectors belonging to a document.
-        FAISS FlatIP doesn't support in-place deletion,
-        so we rebuild the index without those vectors.
-        """
+        """Rebuild index without vectors from the given document."""
         if self.index.ntotal == 0:
             return
 
@@ -153,26 +183,26 @@ class FAISSStore:
             return  # nothing to delete
 
         if not keep_indices:
-            self.index = faiss.IndexFlatIP(384)
-            self.metadata = []
+            self._create_fresh()
             self.save()
             return
 
-        # Reconstruct index with only kept vectors
         all_vectors = np.zeros((self.index.ntotal, 384), dtype=np.float32)
         self.index.reconstruct_n(0, self.index.ntotal, all_vectors)
 
         kept_vectors = all_vectors[keep_indices]
         kept_metadata = [self.metadata[i] for i in keep_indices]
 
-        self.index = faiss.IndexFlatIP(384)
-        self.metadata = []
-
+        self._create_fresh()
         if len(kept_vectors) > 0:
             self.index.add(kept_vectors)
             self.metadata = kept_metadata
 
         self.save()
+        logger.info(
+            f"FAISS: deleted doc {document_id}, "
+            f"{self.index.ntotal} vectors remain"
+        )
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────

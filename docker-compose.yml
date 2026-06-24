@@ -1,4 +1,5 @@
 version: "3.9"
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -10,6 +11,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   backend:
     build:
@@ -20,10 +26,15 @@ services:
     env_file:
       - ./backend/.env
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     volumes:
-      - ./backend:/app
+      # REMOVED: ./backend:/app  ← this bind mount was shadowing the faiss volume
+      # and also caused issues with installed packages being overwritten by host files.
+      # In dev, rebuild the image to pick up code changes: docker compose up --build
       - faiss_data:/app/faiss_index
+    environment:
+      - FAISS_INDEX_PATH=/app/faiss_index
 
   frontend:
     build:
@@ -33,6 +44,8 @@ services:
       - "5173:5173"
     depends_on:
       - backend
+    environment:
+      - VITE_API_URL=http://localhost:8000
 
 volumes:
   postgres_data:

@@ -1,7 +1,6 @@
 """
 LangGraph placement preparation agent.
 
-Key improvements:
 - Per-user FAISS filtering (your notes only answer your questions)
 - Confidence scoring based on cosine similarity
 - Prompts that enforce exact wording from teacher's notes
@@ -29,11 +28,11 @@ class AgentState(TypedDict):
     query: str
     user_id: int
     intent: Optional[str]
-    retrieved_chunks: List[Dict[str, Any]]  # {content, similarity, metadata}
+    retrieved_chunks: List[Dict[str, Any]]
     answer: str
     sources: List[Dict]
     chat_history: List[Dict]
-    db: Any   # SQLAlchemy session (passed through state)
+    db: Any
 
 
 # ── Node 1: Intent Router ──────────────────────────────────────────────────────
@@ -41,9 +40,12 @@ class AgentState(TypedDict):
 def intent_router(state: AgentState) -> AgentState:
     query = state["query"].lower()
 
-    quiz_kw      = ["quiz", "mcq", "multiple choice", "test me", "questions on", "generate questions", "practice questions"]
-    interview_kw = ["interview", "ask me", "interviewer", "prepare me", "mock interview", "conduct interview"]
-    explain_kw   = ["explain", "how does", "how do", "what is", "describe", "elaborate", "detail", "tell me about", "walk me through"]
+    quiz_kw      = ["quiz", "mcq", "multiple choice", "test me", "questions on",
+                    "generate questions", "practice questions"]
+    interview_kw = ["interview", "ask me", "interviewer", "prepare me",
+                    "mock interview", "conduct interview"]
+    explain_kw   = ["explain", "how does", "how do", "what is", "describe",
+                    "elaborate", "detail", "tell me about", "walk me through"]
 
     if any(k in query for k in quiz_kw):
         intent = "quiz"
@@ -67,12 +69,14 @@ def retrieval_node(state: AgentState) -> AgentState:
         query_embedding = get_query_embedding(state["query"])
         faiss_store = get_faiss_store()
 
-        # Search with per-user filtering and cosine similarity threshold
+        # LOWERED min_score from 0.30 → 0.15
+        # Short technical questions ("what is deadlock?") often score 0.20-0.28
+        # against their matching chunks. 0.30 was filtering them all out.
         results = faiss_store.search(
             query_embedding,
             top_k=settings.TOP_K_CHUNKS,
             user_id=user_id,
-            min_score=0.30,   # only chunks with ≥30% cosine similarity
+            min_score=0.15,
         )
 
         chunks_data = []
@@ -82,9 +86,12 @@ def retrieval_node(state: AgentState) -> AgentState:
 
             # Fetch full content from DB (preview is only 300 chars)
             if db and chunk_db_id:
-                chunk = db.query(Chunk).filter(Chunk.id == chunk_db_id).first()
-                if chunk:
-                    content = chunk.content
+                try:
+                    chunk = db.query(Chunk).filter(Chunk.id == chunk_db_id).first()
+                    if chunk:
+                        content = chunk.content
+                except Exception as e:
+                    logger.warning(f"DB lookup failed for chunk {chunk_db_id}: {e}")
 
             if not content:
                 content = meta.get("content_preview", "")
@@ -92,7 +99,6 @@ def retrieval_node(state: AgentState) -> AgentState:
             if not content:
                 continue
 
-            # Confidence label based on cosine similarity
             if similarity >= 0.75:
                 confidence = "Very High"
             elif similarity >= 0.60:
@@ -115,9 +121,9 @@ def retrieval_node(state: AgentState) -> AgentState:
             })
 
         logger.info(
-            f"Retrieval for user {user_id}: query='{state['query'][:60]}' "
-            f"→ {len(chunks_data)} chunks (best similarity: "
-            f"{chunks_data[0]['similarity'] if chunks_data else 'N/A'})"
+            f"Retrieval user={user_id} query='{state['query'][:60]}' "
+            f"→ {len(chunks_data)} chunks "
+            f"(best={chunks_data[0]['similarity'] if chunks_data else 'none'})"
         )
 
     except Exception as e:
@@ -129,22 +135,23 @@ def retrieval_node(state: AgentState) -> AgentState:
 
 # ── Node 3: Response Generator ─────────────────────────────────────────────────
 
-# Core instruction repeated in every prompt so the LLM never forgets it
 FIDELITY_INSTRUCTION = """
 CRITICAL INSTRUCTIONS — follow these without exception:
 1. Your answer MUST be based on the CONTEXT FROM STUDY MATERIALS provided below.
-2. Use the EXACT phrases, terminology, and definitions from the context — do not paraphrase or substitute synonyms.
-3. If the context uses a specific term (e.g. "mutual exclusion", "semaphore"), use that exact term.
+2. Use the EXACT phrases, terminology, and definitions from the context.
+3. If the context uses a specific term, use that exact term.
 4. Quote sentences from the context directly when they are the clearest way to answer.
-5. Preserve the structure from the notes — if the material has numbered points or bullet lists, reflect that structure.
-6. If the context does NOT contain enough information to answer confidently, say so explicitly, then supplement from general knowledge clearly labelled as "[General Knowledge]".
-7. Never invent definitions or examples that are not in the context.
+5. Preserve the structure from the notes — numbered points, bullet lists, etc.
+6. If the context does NOT contain enough information, say so explicitly, then supplement
+   from general knowledge clearly labelled as "[General Knowledge]".
+7. Never invent definitions or examples not in the context.
 """.strip()
 
 SYSTEM_BASE = (
-    "You are a placement preparation assistant helping a student study from their own teacher's notes and study materials. "
-    "Your job is to retrieve and present exactly what is in those notes — not to rephrase or improve them. "
-    "Students need the exact wording their teacher used so they can match exam answers precisely."
+    "You are a placement preparation assistant helping a student study from their own "
+    "teacher's notes and study materials. Your job is to retrieve and present exactly "
+    "what is in those notes. Students need the exact wording their teacher used so they "
+    "can match exam answers precisely."
 )
 
 PROMPTS = {
@@ -208,16 +215,16 @@ Format:
 
 **Q1.** [Question based on the context]
 A) [Option]
-B) [Option]  
+B) [Option]
 C) [Option]
 D) [Option]
 
-[Repeat for Q2-Q5]
+[Repeat for Q2–Q5]
 
 ---
 **ANSWERS:**
 Q1: [Letter] — [Exact phrase from notes that confirms this answer]
-[Repeat for Q2-Q5]""",
+[Repeat for Q2–Q5]""",
 
     "interview": """{fidelity}
 
@@ -236,7 +243,7 @@ Conduct a mock interview. Base the expected answers on the study materials provi
 *[Brief intro as interviewer]*
 
 **Q1 (Warm-up):** [Question]
-✅ *Strong answer (from your notes):* [What a good answer should say, using exact terms from context]
+✅ *Strong answer (from your notes):* [What a good answer should say]
 
 **Q2 (Core concept):** [Question]
 ✅ *Strong answer (from your notes):* [...]
@@ -251,7 +258,7 @@ Conduct a mock interview. Base the expected answers on the study materials provi
 ✅ *Strong answer (from your notes):* [...]
 
 ---
-**Study Tip:** The key terms your interviewer will listen for: [list exact terms from the context]""",
+**Study Tip:** Key terms your interviewer will listen for: [list exact terms from context]""",
 }
 
 
@@ -260,14 +267,12 @@ def response_node(state: AgentState) -> AgentState:
     chunks = state.get("retrieved_chunks", [])
     query = state["query"]
 
-    # Build history string (last 3 exchanges = 6 messages)
     history_parts = []
     for msg in (state.get("chat_history") or [])[-6:]:
         role = msg.get("role", "user").capitalize()
         history_parts.append(f"{role}: {msg['content']}")
     history = "\n".join(history_parts) if history_parts else "No previous conversation."
 
-    # Build context and source list
     if chunks:
         context_parts = []
         for c in chunks:
@@ -302,7 +307,7 @@ def response_node(state: AgentState) -> AgentState:
                 {"role": "user", "content": prompt},
             ],
             max_tokens=2048,
-            temperature=0.2,   # low temperature = more faithful to source material
+            temperature=0.2,
         )
         raw_answer = response.choices[0].message.content
         answer = prefix + raw_answer
@@ -318,7 +323,11 @@ def response_node(state: AgentState) -> AgentState:
             "heading": c["heading"],
             "similarity": c["similarity"],
             "confidence": c["confidence"],
-            "content_preview": c["content"][:200] + "..." if len(c["content"]) > 200 else c["content"],
+            "content_preview": (
+                c["content"][:200] + "..."
+                if len(c["content"]) > 200
+                else c["content"]
+            ),
         }
         for c in chunks
     ]
@@ -341,6 +350,7 @@ def build_graph():
 
 
 _graph = None
+
 
 def get_graph():
     global _graph

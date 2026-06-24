@@ -1,8 +1,7 @@
-import asyncio
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 from datetime import datetime
 from app.db.base import get_db
 from app.db.models import Document, User
@@ -39,7 +38,10 @@ async def upload_document(
     db.commit()
     db.refresh(doc)
 
-    background_tasks.add_task(ingest_document, db, doc.id, file_bytes)
+    # CRITICAL FIX: pass only document_id + file_bytes, NOT the db session.
+    # The request's db session is closed before the background task runs.
+    # ingest_document now creates its own fresh session internally.
+    background_tasks.add_task(ingest_document, doc.id, file_bytes)
 
     return doc
 
@@ -49,7 +51,12 @@ def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    docs = db.query(Document).filter(Document.user_id == current_user.id).order_by(Document.uploaded_at.desc()).all()
+    docs = (
+        db.query(Document)
+        .filter(Document.user_id == current_user.id)
+        .order_by(Document.uploaded_at.desc())
+        .all()
+    )
     return docs
 
 
@@ -59,9 +66,21 @@ def delete_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    doc = db.query(Document).filter(Document.id == doc_id, Document.user_id == current_user.id).first()
+    doc = db.query(Document).filter(
+        Document.id == doc_id,
+        Document.user_id == current_user.id
+    ).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Remove vectors from FAISS before deleting from DB
+    try:
+        from app.retrieval.faiss_store import get_faiss_store
+        get_faiss_store().delete_by_document(doc_id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"FAISS delete failed for doc {doc_id}: {e}")
+
     db.delete(doc)
     db.commit()
     return {"message": "Deleted"}
