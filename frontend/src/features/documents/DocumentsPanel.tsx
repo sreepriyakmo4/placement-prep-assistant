@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { documentsApi } from '../../lib/api'
-import { Upload, FileText, Trash2, CheckCircle, Clock, AlertCircle, Loader2, Plus } from 'lucide-react'
+import { FileText, Trash2, CheckCircle, Clock, AlertCircle, Loader2, Plus } from 'lucide-react'
 import { formatDate } from '../../lib/utils'
 
 interface Document {
@@ -12,10 +12,10 @@ interface Document {
 }
 
 const statusConfig = {
-  done: { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-400/10', label: 'Ready' },
-  processing: { icon: Loader2, color: 'text-amber-400', bg: 'bg-amber-400/10', label: 'Processing', spin: true },
-  pending: { icon: Clock, color: 'text-gray-400', bg: 'bg-gray-400/10', label: 'Pending' },
-  failed: { icon: AlertCircle, color: 'text-red-400', bg: 'bg-red-400/10', label: 'Failed' },
+  done:       { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-400/10', label: 'Ready' },
+  processing: { icon: Loader2,     color: 'text-amber-400',   bg: 'bg-amber-400/10',   label: 'Processing', spin: true },
+  pending:    { icon: Clock,       color: 'text-gray-400',    bg: 'bg-gray-400/10',    label: 'Pending' },
+  failed:     { icon: AlertCircle, color: 'text-red-400',     bg: 'bg-red-400/10',     label: 'Failed' },
 }
 
 export default function DocumentsPanel() {
@@ -26,7 +26,17 @@ export default function DocumentsPanel() {
   const { data: docs = [], isLoading } = useQuery<Document[]>({
     queryKey: ['documents'],
     queryFn: documentsApi.list,
+    // Poll every 5s so status updates (pending → processing → done) are visible
     refetchInterval: 5000,
+    // Always refetch when the component mounts — this ensures that after login
+    // the document list is fetched fresh with the new user's token, not served
+    // from a potentially stale cache.
+    refetchOnMount: true,
+    // Also refetch when the browser tab regains focus
+    refetchOnWindowFocus: true,
+    // staleTime: 0 means the cache is immediately considered stale,
+    // so the next render always triggers a background refetch.
+    staleTime: 0,
   })
 
   const deleteMutation = useMutation({

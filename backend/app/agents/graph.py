@@ -2,8 +2,9 @@
 LangGraph placement preparation agent.
 
 - Per-user FAISS filtering (your notes only answer your questions)
+- Intent-aware retrieval: explain/quiz/interview fetch MORE chunks for full coverage
+- Comprehensive explain prompt: covers ALL types/items from the document
 - Confidence scoring based on cosine similarity
-- Prompts that enforce exact wording from teacher's notes
 - Graceful fallback to general knowledge when no relevant chunks found
 """
 import logging
@@ -45,7 +46,9 @@ def intent_router(state: AgentState) -> AgentState:
     interview_kw = ["interview", "ask me", "interviewer", "prepare me",
                     "mock interview", "conduct interview"]
     explain_kw   = ["explain", "how does", "how do", "what is", "describe",
-                    "elaborate", "detail", "tell me about", "walk me through"]
+                    "elaborate", "detail", "tell me about", "walk me through",
+                    "types of", "list", "difference between", "compare",
+                    "advantages", "disadvantages", "features of"]
 
     if any(k in query for k in quiz_kw):
         intent = "quiz"
@@ -61,20 +64,32 @@ def intent_router(state: AgentState) -> AgentState:
 
 # ── Node 2: Retrieval ──────────────────────────────────────────────────────────
 
+# How many chunks to retrieve per intent.
+# explain/quiz/interview need MORE chunks for comprehensive coverage.
+# e.g. "types of OS" may span 6-8 chunks — we need all of them.
+INTENT_TOP_K = {
+    "qa":        5,
+    "explain":   12,   # fetch up to 12 chunks so no type/item is missed
+    "quiz":      10,   # need broad coverage to generate good MCQs
+    "interview": 10,   # need multiple topics for varied interview questions
+}
+
+
 def retrieval_node(state: AgentState) -> AgentState:
     db = state.get("db")
     user_id = state.get("user_id")
+    intent = state.get("intent", "qa")
+
+    # Use intent-specific top_k for broader or narrower retrieval
+    top_k = INTENT_TOP_K.get(intent, settings.TOP_K_CHUNKS)
 
     try:
         query_embedding = get_query_embedding(state["query"])
         faiss_store = get_faiss_store()
 
-        # LOWERED min_score from 0.30 → 0.15
-        # Short technical questions ("what is deadlock?") often score 0.20-0.28
-        # against their matching chunks. 0.30 was filtering them all out.
         results = faiss_store.search(
             query_embedding,
-            top_k=settings.TOP_K_CHUNKS,
+            top_k=top_k,
             user_id=user_id,
             min_score=0.15,
         )
@@ -84,7 +99,7 @@ def retrieval_node(state: AgentState) -> AgentState:
             chunk_db_id = meta.get("chunk_db_id")
             content = None
 
-            # Fetch full content from DB (preview is only 300 chars)
+            # Fetch full content from DB
             if db and chunk_db_id:
                 try:
                     chunk = db.query(Chunk).filter(Chunk.id == chunk_db_id).first()
@@ -121,8 +136,9 @@ def retrieval_node(state: AgentState) -> AgentState:
             })
 
         logger.info(
-            f"Retrieval user={user_id} query='{state['query'][:60]}' "
-            f"→ {len(chunks_data)} chunks "
+            f"Retrieval intent={intent} user={user_id} "
+            f"query='{state['query'][:60]}' "
+            f"→ {len(chunks_data)}/{top_k} chunks "
             f"(best={chunks_data[0]['similarity'] if chunks_data else 'none'})"
         )
 
@@ -137,21 +153,22 @@ def retrieval_node(state: AgentState) -> AgentState:
 
 FIDELITY_INSTRUCTION = """
 CRITICAL INSTRUCTIONS — follow these without exception:
-1. Your answer MUST be based on the CONTEXT FROM STUDY MATERIALS provided below.
+1. Your answer MUST be based ENTIRELY on the CONTEXT FROM STUDY MATERIALS below.
 2. Use the EXACT phrases, terminology, and definitions from the context.
-3. If the context uses a specific term, use that exact term.
-4. Quote sentences from the context directly when they are the clearest way to answer.
-5. Preserve the structure from the notes — numbered points, bullet lists, etc.
-6. If the context does NOT contain enough information, say so explicitly, then supplement
-   from general knowledge clearly labelled as "[General Knowledge]".
-7. Never invent definitions or examples not in the context.
+3. COVER EVERYTHING in the context that is relevant to the question — do NOT skip any type, category, or item mentioned.
+4. If the context lists N types/categories/methods, your answer must address ALL N of them.
+5. Quote or closely paraphrase sentences from the context — do not substitute synonyms.
+6. Preserve structure: if notes have numbered points or bullet lists, reflect that structure.
+7. If the context does NOT contain enough information, say so explicitly, then add [General Knowledge] clearly labelled.
+8. Never invent definitions or examples not in the context.
 """.strip()
 
 SYSTEM_BASE = (
     "You are a placement preparation assistant helping a student study from their own "
-    "teacher's notes and study materials. Your job is to retrieve and present exactly "
-    "what is in those notes. Students need the exact wording their teacher used so they "
-    "can match exam answers precisely."
+    "teacher's notes and study materials. Your job is to retrieve and present EVERYTHING "
+    "that is in those notes relevant to the question — not just a summary. "
+    "Students need complete coverage of all types, categories, and details their teacher wrote "
+    "so they can give full answers in exams and interviews."
 )
 
 PROMPTS = {
@@ -179,22 +196,25 @@ PREVIOUS CONVERSATION:
 
 TOPIC TO EXPLAIN: {query}
 
-Provide a structured explanation using the study materials. Follow this format:
+Provide a COMPLETE and COMPREHENSIVE explanation using ALL content from the study materials above.
 
-**Definition** (exact wording from notes):
-[quote or closely follow the definition in the context]
+IMPORTANT: If the context mentions multiple types, categories, methods, or items — you MUST cover EVERY SINGLE ONE with at least a sentence each. Do not summarise or skip any.
 
-**How It Works** (from your notes):
-[explain using the structure and terms in the context]
+Structure your response as follows:
 
-**Key Points** (from your notes):
-[list the main points exactly as they appear in the material]
+**Overview / Definition** (exact wording from notes):
+[Give the definition or overview exactly as stated in the context]
 
-**Example** (from notes or clearly labelled as [General Knowledge]):
-[example]
+**[List every type / category / method mentioned — use the exact heading from notes]**
+
+For EACH type/category found in the context, write:
+- **[Name]**: [Full explanation from the notes — at least 2-3 sentences per item]
+
+**Key Points to Remember** (from your notes):
+[Bullet list of the most important facts, using exact phrasing from context]
 
 **What to Say in an Interview**:
-[based on the above notes, what phrasing should the student use?]""",
+[Exact terminology and phrasing the student should use, drawn from the context]""",
 
     "quiz": """{fidelity}
 
@@ -206,8 +226,9 @@ PREVIOUS CONVERSATION:
 
 TOPIC: {query}
 
-Generate exactly 5 MCQs. Each question MUST be answerable from the context above.
-The correct answer should use the exact wording from the study material.
+Generate exactly 5 MCQs. Each question MUST be directly answerable from the context above.
+Cover DIFFERENT aspects from the context — do not repeat the same concept twice.
+The correct answer must use the exact wording from the study material.
 
 Format:
 
@@ -236,25 +257,26 @@ PREVIOUS CONVERSATION:
 
 INTERVIEW REQUEST: {query}
 
-Conduct a mock interview. Base the expected answers on the study materials provided.
+Conduct a mock interview. Base ALL expected answers on the study materials provided.
+Cover different aspects of the topic across the 5 questions.
 
 **Technical Interview Simulation**
 
 *[Brief intro as interviewer]*
 
 **Q1 (Warm-up):** [Question]
-✅ *Strong answer (from your notes):* [What a good answer should say]
+✅ *Strong answer (from your notes):* [What a good answer should say — use exact terms from context]
 
 **Q2 (Core concept):** [Question]
 ✅ *Strong answer (from your notes):* [...]
 
-**Q3 (Application):** [Question]
-✅ *Strong answer (from your notes):* [...]
+**Q3 (Types/Categories):** [Question about specific types or categories from the notes]
+✅ *Strong answer (from your notes):* [Cover ALL relevant types from the context]
 
 **Q4 (Deep dive):** [Question]
 ✅ *Strong answer (from your notes):* [...]
 
-**Q5 (Scenario):** [Question]
+**Q5 (Application/Scenario):** [Question]
 ✅ *Strong answer (from your notes):* [...]
 
 ---
@@ -306,7 +328,7 @@ def response_node(state: AgentState) -> AgentState:
                 {"role": "system", "content": SYSTEM_BASE},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=2048,
+            max_tokens=4096,   # increased from 2048 — comprehensive answers need space
             temperature=0.2,
         )
         raw_answer = response.choices[0].message.content
@@ -323,9 +345,10 @@ def response_node(state: AgentState) -> AgentState:
             "heading": c["heading"],
             "similarity": c["similarity"],
             "confidence": c["confidence"],
+            # Increased from 200 to 400 chars so source badge shows meaningful context
             "content_preview": (
-                c["content"][:200] + "..."
-                if len(c["content"]) > 200
+                c["content"][:400] + "..."
+                if len(c["content"]) > 400
                 else c["content"]
             ),
         }
