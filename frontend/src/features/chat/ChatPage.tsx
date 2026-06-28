@@ -19,6 +19,11 @@ interface Message {
   content: string
   sources?: string
   created_at: string
+  // true while this assistant message is still streaming in (no full
+  // content yet, or content is actively growing) — used to show the
+  // "searching/generating" status text inside the bubble instead of a
+  // markdown render of a half-finished string.
+  streaming?: boolean
 }
 
 interface Session {
@@ -55,6 +60,9 @@ export default function ChatPage() {
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
   const [thinking, setThinking] = useState(false)
+  // Live status text shown inside the streaming bubble before any tokens
+  // have arrived yet, e.g. "🔍 Searching relevant documents..."
+  const [statusText, setStatusText] = useState('')
   const [lastIntent, setLastIntent] = useState<string>('qa')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [docsOpen, setDocsOpen] = useState(false)
@@ -98,34 +106,68 @@ export default function ChatPage() {
       content: q,
       created_at: new Date().toISOString(),
     }
-    setMessages(prev => [...prev, tempUserMsg])
+
+    // Placeholder assistant bubble that we fill in as chunks stream in,
+    // instead of waiting for the whole answer before showing anything.
+    const assistantId = Date.now() + 1
+    const placeholderAssistantMsg: Message = {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString(),
+      streaming: true,
+    }
+
+    setMessages(prev => [...prev, tempUserMsg, placeholderAssistantMsg])
     setThinking(true)
+    setStatusText('🔍 Searching relevant documents...')
+
+    let streamedContent = ''
+    let resolvedSessionId: number | undefined
 
     try {
-      const result = await chatApi.query(q, currentSessionId || undefined)
-      if (!currentSessionId) {
-        setCurrentSessionId(result.session_id)
+      await chatApi.queryStream(q, currentSessionId || undefined, (event) => {
+        if (event.type === 'session' && event.session_id) {
+          resolvedSessionId = event.session_id
+        } else if (event.type === 'status' && event.message) {
+          setStatusText(event.message)
+        } else if (event.type === 'chunk' && event.content) {
+          streamedContent += event.content
+          setMessages(prev => prev.map(m =>
+            m.id === assistantId
+              ? { ...m, content: streamedContent, streaming: true }
+              : m
+          ))
+        } else if (event.type === 'done') {
+          const finalSources = event.sources ? JSON.stringify(event.sources) : undefined
+          setLastIntent(event.intent || 'qa')
+          setMessages(prev => prev.map(m =>
+            m.id === assistantId
+              ? { ...m, content: event.answer ?? streamedContent, sources: finalSources, streaming: false }
+              : m
+          ))
+        } else if (event.type === 'error' && event.message) {
+          setMessages(prev => prev.map(m =>
+            m.id === assistantId
+              ? { ...m, content: '⚠️ ' + event.message, streaming: false }
+              : m
+          ))
+        }
+      })
+
+      if (!currentSessionId && resolvedSessionId) {
+        setCurrentSessionId(resolvedSessionId)
         qc.invalidateQueries({ queryKey: ['sessions'] })
       }
-      setLastIntent(result.intent)
-      const assistantMsg: Message = {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: result.answer,
-        sources: JSON.stringify(result.sources),
-        created_at: new Date().toISOString(),
-      }
-      setMessages(prev => [...prev, assistantMsg])
     } catch (e: any) {
-      const errMsg: Message = {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: '⚠️ Error: ' + (e.response?.data?.detail || 'Something went wrong. Please try again.'),
-        created_at: new Date().toISOString(),
-      }
-      setMessages(prev => [...prev, errMsg])
+      setMessages(prev => prev.map(m =>
+        m.id === assistantId
+          ? { ...m, content: '⚠️ Error: ' + (e?.message || 'Something went wrong. Please try again.'), streaming: false }
+          : m
+      ))
     } finally {
       setThinking(false)
+      setStatusText('')
     }
   }
 
@@ -283,10 +325,26 @@ export default function ChatPage() {
                   </div>
                 ) : (
                   <div className="bg-surface-2 border border-white/5 rounded-2xl rounded-tl-sm px-5 py-4">
-                    <div className="markdown-body text-sm text-gray-200 leading-relaxed">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                    </div>
-                    {msg.sources && <SourceBadge sources={msg.sources} />}
+                    {msg.content ? (
+                      <>
+                        <div className="markdown-body text-sm text-gray-200 leading-relaxed">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                        </div>
+                        {/* A small cursor while still streaming, so it's clear more text is coming */}
+                        {msg.streaming && (
+                          <span className="inline-block w-1.5 h-4 bg-accent/70 ml-0.5 align-middle animate-pulse" />
+                        )}
+                        {!msg.streaming && msg.sources && <SourceBadge sources={msg.sources} />}
+                      </>
+                    ) : (
+                      // No tokens yet for this message — show the live status
+                      // ("Searching relevant documents..." / "Generating response...")
+                      // instead of a blank bubble.
+                      <div className="flex items-center gap-2.5 text-sm text-gray-400">
+                        <ThinkingDots />
+                        {msg.streaming && statusText && <span>{statusText}</span>}
+                      </div>
+                    )}
                   </div>
                 )}
                 <p className="text-xs text-gray-700 mt-1.5 px-1">{formatDate(msg.created_at)}</p>
@@ -298,17 +356,6 @@ export default function ChatPage() {
               )}
             </div>
           ))}
-
-          {thinking && (
-            <div className="flex gap-4 animate-slide-up">
-              <div className="w-8 h-8 bg-accent rounded-xl flex items-center justify-center flex-shrink-0 animate-pulse-glow">
-                <Bot size={16} className="text-white" />
-              </div>
-              <div className="bg-surface-2 border border-white/5 rounded-2xl rounded-tl-sm px-5 py-4">
-                <ThinkingDots />
-              </div>
-            </div>
-          )}
 
           <div ref={bottomRef} />
         </div>

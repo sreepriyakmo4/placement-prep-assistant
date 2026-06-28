@@ -154,13 +154,33 @@ def retrieval_node(state: AgentState) -> AgentState:
 FIDELITY_INSTRUCTION = """
 CRITICAL INSTRUCTIONS — follow these without exception:
 1. Your answer MUST be based ENTIRELY on the CONTEXT FROM STUDY MATERIALS below.
-2. Use the EXACT phrases, terminology, and definitions from the context.
-3. COVER EVERYTHING in the context that is relevant to the question — do NOT skip any type, category, or item mentioned.
-4. If the context lists N types/categories/methods, your answer must address ALL N of them.
-5. Quote or closely paraphrase sentences from the context — do not substitute synonyms.
-6. Preserve structure: if notes have numbered points or bullet lists, reflect that structure.
-7. If the context does NOT contain enough information, say so explicitly, then add [General Knowledge] clearly labelled.
-8. Never invent definitions or examples not in the context.
+2. Use the EXACT phrases, terminology, and definitions from the context. Do NOT paraphrase
+   unnecessarily — reproduce the wording from the notes faithfully wherever it already answers
+   the question well.
+3. COVER EVERYTHING in the context that is relevant to the question — do NOT skip any type,
+   category, item, or bullet point mentioned. Do NOT compress the context into a short summary.
+   Expand your answer to use ALL retrieved chunks, not just the most relevant one or two.
+4. If the context lists N types/categories/methods/points, your answer must address ALL N of
+   them, each as its own clearly labelled item — never collapse a list into a single sentence
+   or paragraph.
+5. PRESERVE THE ORIGINAL DOCUMENT STRUCTURE:
+   - Keep the same headings and subheadings used in the notes whenever a [heading] tag is
+     present in the context (use them as Markdown headings, e.g. "## Heading", "### Subheading").
+   - If a chunk has no explicit heading, infer a short heading from its first line/topic rather
+     than dropping structure.
+   - Preserve bullet lists as bullet lists, numbered lists as numbered lists, and tables as
+     Markdown tables — never flatten them into prose.
+   - Preserve important keywords, terms, and labels exactly as written in the notes.
+6. If retrieved chunks belong to the SAME heading/topic, merge them smoothly under that one
+   heading. If chunks belong to DIFFERENT headings/topics, present them under SEPARATE headings
+   in the order that best matches the notes — do not blend unrelated topics into one paragraph.
+7. The final answer should read like well-organized study notes extracted directly from the
+   documents — NOT like an LLM-generated summary. Favor completeness and structure over brevity.
+8. If the context does NOT contain enough information, say so explicitly, then add
+   [General Knowledge] clearly labelled.
+9. Never invent definitions, examples, headings, or facts not present in the context.
+
+Priority order when these instructions interact: Accuracy > Completeness > Formatting > Brevity.
 """.strip()
 
 SYSTEM_BASE = (
@@ -168,7 +188,13 @@ SYSTEM_BASE = (
     "teacher's notes and study materials. Your job is to retrieve and present EVERYTHING "
     "that is in those notes relevant to the question — not just a summary. "
     "Students need complete coverage of all types, categories, and details their teacher wrote "
-    "so they can give full answers in exams and interviews."
+    "so they can give full answers in exams and interviews.\n\n"
+    "You output well-organized study notes extracted directly from the source material — "
+    "with the same headings, subheadings, bullet points, numbered lists, and tables the notes "
+    "already use — NOT a compressed LLM-style summary. Reproduce the structure and wording of "
+    "the notes faithfully; only add light connective phrasing where needed for readability. "
+    "Never merge a multi-point list into a single paragraph, and never drop a heading, bullet, "
+    "or item that appears in the retrieved context."
 )
 
 PROMPTS = {
@@ -182,9 +208,15 @@ PREVIOUS CONVERSATION:
 
 STUDENT QUESTION: {query}
 
-Answer using the exact wording and definitions from the study materials above.
-If the answer is directly stated in the materials, quote or closely paraphrase it.
-Start your answer with the most relevant sentence from the context.""",
+Answer using the exact wording, headings, and structure from the study materials above.
+- If the context answers this in a single sentence or definition, give that directly using the
+  original wording — no need to add headings for a one-line factual answer.
+- If the context contains a list, multiple points, steps, or sub-parts relevant to the question,
+  reproduce ALL of them as a Markdown bullet/numbered list under the original heading (or a short
+  inferred heading) — do NOT compress them into a single paragraph.
+- If the relevant content spans more than one heading/topic in the notes, present each under its
+  own "## Heading" in Markdown rather than blending them together.
+Start your answer with the most relevant sentence or heading from the context.""",
 
     "explain": """{fidelity}
 
@@ -196,25 +228,32 @@ PREVIOUS CONVERSATION:
 
 TOPIC TO EXPLAIN: {query}
 
-Provide a COMPLETE and COMPREHENSIVE explanation using ALL content from the study materials above.
+Produce COMPLETE, WELL-ORGANIZED STUDY NOTES using ALL content from the study materials above —
+not a summary. The output should read like the original notes, reorganized only enough to answer
+the question, never compressed into a few sentences.
 
-IMPORTANT: If the context mentions multiple types, categories, methods, or items — you MUST cover EVERY SINGLE ONE with at least a sentence each. Do not summarise or skip any.
+How to structure the answer:
 
-Structure your response as follows:
+1. Look at the "[heading]" tag attached to each source chunk above (when present). Use those
+   EXACT headings/subheadings as Markdown headings in your answer (## for a main heading, ###
+   for a sub-heading), in the order they make sense for the topic.
+2. If two or more chunks share the same heading/topic, MERGE them smoothly under that one
+   heading — do not repeat the heading twice.
+3. If chunks belong to DIFFERENT headings/topics, keep them under SEPARATE headings — do not
+   blend unrelated topics into one paragraph.
+4. Within each heading, reproduce the notes faithfully:
+   - Keep bullet points as "-" lists, numbered steps as "1. 2. 3." lists, and any tabular data
+     as a Markdown table. Never flatten a list into prose.
+   - Use the exact terminology and definitions from the notes; avoid unnecessary paraphrasing.
+   - If the context lists multiple types/categories/methods under a heading, give EVERY one of
+     them its own bullet or sub-heading with its full explanation — do not skip or shorten any.
+5. If a chunk has no heading, give it a short heading inferred from its content rather than
+   dropping it or merging it silently into another topic.
+6. End with a short "## Key Points to Remember" section as a bullet list of the most important
+   facts, using exact phrasing from the context — this is a recap, not a replacement for the
+   detailed sections above.
 
-**Overview / Definition** (exact wording from notes):
-[Give the definition or overview exactly as stated in the context]
-
-**[List every type / category / method mentioned — use the exact heading from notes]**
-
-For EACH type/category found in the context, write:
-- **[Name]**: [Full explanation from the notes — at least 2-3 sentences per item]
-
-**Key Points to Remember** (from your notes):
-[Bullet list of the most important facts, using exact phrasing from context]
-
-**What to Say in an Interview**:
-[Exact terminology and phrasing the student should use, drawn from the context]""",
+Do not omit any heading, bullet, list item, or table that appears in the retrieved context.""",
 
     "quiz": """{fidelity}
 
@@ -328,7 +367,11 @@ def response_node(state: AgentState) -> AgentState:
                 {"role": "system", "content": SYSTEM_BASE},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=4096,   # increased from 2048 — comprehensive answers need space
+            max_tokens=4096,   # kept at 4096 — this account's Groq on_demand tier caps
+                                # llama-3.3-70b-versatile at 12,000 tokens/minute (TPM).
+                                # 8192 pushed requests (input + max_tokens) over that cap and
+                                # caused 413 "Request too large" errors. If you upgrade to
+                                # Groq's Dev tier (higher TPM), this can be raised again.
             temperature=0.2,
         )
         raw_answer = response.choices[0].message.content
@@ -406,3 +449,141 @@ def run_agent(
         "intent": result["intent"],
     }
 
+
+# ── Streaming variant (used by /chat/query/stream) ─────────────────────────────
+#
+# LangGraph's compiled graph.invoke() runs all nodes synchronously and only
+# returns once the whole answer string exists — it has no notion of partial
+# output, so it can't be used to stream tokens to the frontend as-is.
+#
+# To stream, this function calls the EXACT SAME `intent_router` and
+# `retrieval_node` functions above, in the same order, with the same
+# arguments — so retrieval behaves identically to the non-streaming path.
+# The only difference is the final generation step: instead of calling Groq
+# once and waiting for the full completion (as response_node does), this
+# calls Groq with stream=True and yields each token/delta as soon as it
+# arrives, plus small status events the frontend can show while waiting.
+#
+# run_agent() and build_graph()/response_node() above are untouched and still
+# power the original /chat/query endpoint exactly as before.
+
+def run_agent_stream(
+    query: str,
+    chat_history: List[Dict],
+    db,
+    user_id: int,
+):
+    """
+    Generator yielding dicts of the form:
+      {"type": "status", "message": "..."}                      — progress text
+      {"type": "chunk",  "content": "..."}                       — a piece of the answer
+      {"type": "done",   "answer": "...", "sources": [...], "intent": "..."}  — final result
+      {"type": "error",  "message": "..."}                       — fatal error (rare; normally
+                                                                     errors are folded into the
+                                                                     answer text like the
+                                                                     non-streaming path does)
+    """
+    state: AgentState = {
+        "query": query,
+        "user_id": user_id,
+        "intent": None,
+        "retrieved_chunks": [],
+        "answer": "",
+        "sources": [],
+        "chat_history": chat_history,
+        "db": db,
+    }
+
+    # Same node, same logic, same order as the compiled graph
+    state = intent_router(state)
+
+    yield {"type": "status", "message": "🔍 Searching relevant documents..."}
+    state = retrieval_node(state)  # identical retrieval_node function used by build_graph()
+
+    intent = state.get("intent", "qa")
+    chunks = state.get("retrieved_chunks", [])
+
+    # ---- identical context/prompt construction to response_node() above ----
+    history_parts = []
+    for msg in (chat_history or [])[-6:]:
+        role = msg.get("role", "user").capitalize()
+        history_parts.append(f"{role}: {msg['content']}")
+    history = "\n".join(history_parts) if history_parts else "No previous conversation."
+
+    if chunks:
+        context_parts = []
+        for c in chunks:
+            heading = f"[{c['heading']}] " if c.get("heading") else ""
+            context_parts.append(
+                f"📄 Source: {c['filename']} | Page {c['page_num']} | "
+                f"Relevance: {c['confidence']} ({c['similarity']:.0%})\n"
+                f"{heading}{c['content']}"
+            )
+        context = "\n\n---\n\n".join(context_parts)
+        prefix = "📚 *Answer based on your uploaded study materials.*\n\n"
+    else:
+        context = "No relevant content found in the uploaded study materials for this query."
+        prefix = (
+            "🌐 *No matching content found in your uploaded documents. "
+            "Answering from general knowledge — please verify against your notes.*\n\n"
+        )
+
+    prompt_template = PROMPTS.get(intent, PROMPTS["qa"])
+    prompt = prompt_template.format(
+        fidelity=FIDELITY_INSTRUCTION,
+        context=context,
+        history=history,
+        query=query,
+    )
+
+    sources = [
+        {
+            "filename": c["filename"],
+            "page_num": c["page_num"],
+            "chunk_index": c["chunk_index"],
+            "heading": c["heading"],
+            "similarity": c["similarity"],
+            "confidence": c["confidence"],
+            "content_preview": (
+                c["content"][:400] + "..." if len(c["content"]) > 400 else c["content"]
+            ),
+        }
+        for c in chunks
+    ]
+
+    yield {"type": "status", "message": "🧠 Generating response..."}
+
+    full_answer = prefix
+    if prefix:
+        yield {"type": "chunk", "content": prefix}
+
+    try:
+        stream = _client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_BASE},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=4096,
+            temperature=0.2,
+            stream=True,
+        )
+        for event in stream:
+            delta = None
+            if event.choices:
+                delta = event.choices[0].delta.content
+            if delta:
+                full_answer += delta
+                yield {"type": "chunk", "content": delta}
+    except Exception as e:
+        logger.exception(f"Groq streaming generation failed: {e}")
+        err_text = "⚠️ Error generating response. Please check your GROQ_API_KEY and try again."
+        full_answer += err_text
+        yield {"type": "chunk", "content": err_text}
+
+    yield {
+        "type": "done",
+        "answer": full_answer,
+        "sources": sources,
+        "intent": intent,
+    }
