@@ -84,3 +84,4 @@ def delete_document(
     db.delete(doc)
     db.commit()
     return {"message": "Deleted"}
+

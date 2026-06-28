@@ -74,3 +74,4 @@ class Chunk(Base):
     faiss_id = Column(Integer, nullable=True)
 
     document = relationship("Document", back_populates="chunks")
+
