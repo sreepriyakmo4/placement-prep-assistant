@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.base import Base, engine, SessionLocal
-from app.api import auth, documents, chat
+from app.api import auth, documents, chat, quiz
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +31,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
+app.include_router(quiz.router)
 
 
 def _rebuild_faiss_if_needed():

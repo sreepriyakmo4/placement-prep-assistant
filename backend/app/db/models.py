@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Enum
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Enum, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -22,6 +22,7 @@ class User(Base):
 
     sessions = relationship("Session", back_populates="user", cascade="all, delete")
     documents = relationship("Document", back_populates="user", cascade="all, delete")
+    quiz_attempts = relationship("QuizAttempt", back_populates="user", cascade="all, delete")
 
 
 class Session(Base):
@@ -60,6 +61,8 @@ class Document(Base):
 
     user = relationship("User", back_populates="documents")
     chunks = relationship("Chunk", back_populates="document", cascade="all, delete")
+    quiz_questions = relationship("QuizQuestion", back_populates="document", cascade="all, delete")
+    quiz_attempts = relationship("QuizAttempt", back_populates="document", cascade="all, delete")
 
 
 class Chunk(Base):
@@ -75,3 +78,48 @@ class Chunk(Base):
 
     document = relationship("Document", back_populates="chunks")
 
+
+class QuizQuestion(Base):
+    """Stores generated MCQ questions for a document"""
+    __tablename__ = "quiz_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    question = Column(Text, nullable=False)
+    options = Column(Text, nullable=False)  # JSON: ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"]
+    correct_answer = Column(String, nullable=False)  # "A", "B", "C", or "D"
+    topic = Column(String, nullable=False)  # e.g. "Constraints", "Joins", "Indexing"
+    explanation = Column(Text, nullable=True)  # Why is this answer correct
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    document = relationship("Document", back_populates="quiz_questions")
+
+
+class QuizAttempt(Base):
+    """Tracks each time a user takes a quiz on a document"""
+    __tablename__ = "quiz_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    score = Column(Integer, nullable=False)  # e.g. 13 (out of 15)
+    total_questions = Column(Integer, default=15)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="quiz_attempts")
+    document = relationship("Document", back_populates="quiz_attempts")
+    answers = relationship("QuizAnswer", back_populates="attempt", cascade="all, delete")
+
+
+class QuizAnswer(Base):
+    """Stores user's answer to each question in a quiz attempt"""
+    __tablename__ = "quiz_answers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    attempt_id = Column(Integer, ForeignKey("quiz_attempts.id", ondelete="CASCADE"), nullable=False)
+    question_id = Column(Integer, ForeignKey("quiz_questions.id"), nullable=False)
+    user_answer = Column(String, nullable=False)  # "A", "B", "C", or "D"
+    is_correct = Column(Boolean, nullable=False)
+    topic = Column(String, nullable=False)  # denormalized for easy filtering
+
+    attempt = relationship("QuizAttempt", back_populates="answers")

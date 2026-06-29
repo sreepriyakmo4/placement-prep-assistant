@@ -1,7 +1,8 @@
 import React, { useCallback, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { documentsApi } from '../../lib/api'
-import { FileText, Trash2, CheckCircle, Clock, AlertCircle, Loader2, Plus } from 'lucide-react'
+import { FileText, Trash2, CheckCircle, Clock, AlertCircle, Loader2, Plus, ClipboardList } from 'lucide-react'
 import { formatDate } from '../../lib/utils'
 
 interface Document {
@@ -20,6 +21,7 @@ const statusConfig = {
 
 export default function DocumentsPanel() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
 
@@ -136,6 +138,17 @@ export default function DocumentsPanel() {
                       <span className="text-xs text-gray-600">{formatDate(doc.uploaded_at)}</span>
                     </div>
                   </div>
+                  
+                  {doc.status === 'done' && (
+                    <button
+                      onClick={() => navigate(`/quiz/${doc.id}`)}
+                      className="opacity-0 group-hover:opacity-100 text-emerald-400 hover:text-emerald-300 transition-all p-1"
+                      title="Take quiz on this document"
+                    >
+                      <ClipboardList size={14} />
+                    </button>
+                  )}
+                  
                   <button
                     onClick={() => deleteMutation.mutate(doc.id)}
                     className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all p-1"

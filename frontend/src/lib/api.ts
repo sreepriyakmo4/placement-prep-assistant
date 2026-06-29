@@ -133,3 +133,15 @@ export const chatApi = {
   deleteSession: (session_id: number) =>
     api.delete(`/chat/sessions/${session_id}`).then(r => r.data),
 }
+
+// Quiz
+export const quizApi = {
+  generateQuiz: (docId: number) =>
+    api.post(`/quiz/generate/${docId}`).then(r => r.data),
+
+  submitQuiz: (docId: number, answers: any[]) =>
+    api.post(`/quiz/submit/${docId}`, { answers }).then(r => r.data),
+
+  getQuizHistory: (docId: number) =>
+    api.get(`/quiz/history/${docId}`).then(r => r.data),
+}
