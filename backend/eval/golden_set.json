@@ -1,0 +1,92 @@
+[
+  {
+    "question": "What is SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "",
+    "notes": "SQL is a query language for CRUD operations"
+  },
+  {
+    "question": "What are CRUD operations in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "",
+    "notes": "CREATE INSERT READ UPDATE DELETE"
+  },
+  {
+    "question": "What is the difference between SQL and MySQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "",
+    "notes": "SQL is query language, MySQL is RDBMS"
+  },
+  {
+    "question": "What are SQL data types?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "SQL DATA TYPES",
+    "notes": "CHAR VARCHAR INT FLOAT etc"
+  },
+  {
+    "question": "What is DDL in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "",
+    "notes": "Data Definition Language - CREATE ALTER DROP TRUNCATE RENAME"
+  },
+  {
+    "question": "What is DML in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "",
+    "notes": "Data Manipulation Language - INSERT UPDATE DELETE"
+  },
+  {
+    "question": "What is the difference between WHERE and HAVING in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "GROUP BY HAVING",
+    "notes": "WHERE filters rows, HAVING filters groups after GROUP BY"
+  },
+  {
+    "question": "What is a primary key?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "CONSTRAINTS",
+    "notes": "Not null, unique, only one per table"
+  },
+  {
+    "question": "What is a foreign key?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "CONSTRAINTS",
+    "notes": "Refers to PK of another table"
+  },
+  {
+    "question": "What is inner join in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "JOINING TABLES",
+    "notes": "Returns matching values from both tables"
+  },
+  {
+    "question": "What is left join in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "JOINING TABLES",
+    "notes": "All data from left table and matched data from right table"
+  },
+  {
+    "question": "What is a subquery in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "SUB QUERIES",
+    "notes": "Nested query, outer query depends on inner query"
+  },
+  {
+    "question": "What is a VIEW in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "MySQL VIEWS",
+    "notes": "Virtual table, no values of its own, based on base table"
+  },
+  {
+    "question": "What is GROUP BY in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "",
+    "notes": "Groups rows by column, used with aggregation functions"
+  },
+  {
+    "question": "What is the difference between UNION and JOIN in SQL?",
+    "source_filename": "SQL_Lecture_Notes.pdf",
+    "source_heading": "SET OPERATIONS",
+    "notes": "JOIN combines columns, UNION combines rows"
+  }
+]

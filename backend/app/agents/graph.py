@@ -1,9 +1,26 @@
 """
 LangGraph placement preparation agent.
 
+Graph structure:
+    intent_router
+        ↓
+    retrieval_node
+        ↓
+    route_after_retrieval  ← CONDITIONAL EDGE (new)
+        ↓ (good)               ↓ (poor confidence)
+    response_node        query_rewrite_node
+        ↓                      ↓
+       END               retrieval_node_retry
+                               ↓
+                         response_node
+                               ↓
+                              END
+
+- If top retrieval score >= 0.3  → go straight to response_node
+- If top retrieval score <  0.3  → rewrite the query, retry retrieval once,
+                                    then go to response_node regardless
 - Per-user FAISS filtering (your notes only answer your questions)
-- Intent-aware retrieval: explain/quiz/interview fetch MORE chunks for full coverage
-- Comprehensive explain prompt: covers ALL types/items from the document
+- Intent-aware retrieval: explain/quiz/interview fetch MORE chunks
 - Confidence scoring based on cosine similarity
 - Graceful fallback to general knowledge when no relevant chunks found
 """
@@ -27,6 +44,8 @@ _client = Groq(api_key=settings.GROQ_API_KEY)
 
 class AgentState(TypedDict):
     query: str
+    rewritten_query: Optional[str]   # set by query_rewrite_node if triggered
+    was_rewritten: bool               # flag so response_node can note this
     user_id: int
     intent: Optional[str]
     retrieved_chunks: List[Dict[str, Any]]
@@ -64,27 +83,27 @@ def intent_router(state: AgentState) -> AgentState:
 
 # ── Node 2: Retrieval ──────────────────────────────────────────────────────────
 
-# How many chunks to retrieve per intent.
-# explain/quiz/interview need MORE chunks for comprehensive coverage.
-# e.g. "types of OS" may span 6-8 chunks — we need all of them.
 INTENT_TOP_K = {
     "qa":        5,
-    "explain":   12,   # fetch up to 12 chunks so no type/item is missed
-    "quiz":      10,   # need broad coverage to generate good MCQs
-    "interview": 10,   # need multiple topics for varied interview questions
+    "explain":   12,
+    "quiz":      10,
+    "interview": 10,
 }
 
 
-def retrieval_node(state: AgentState) -> AgentState:
+def _do_retrieval(query: str, state: AgentState) -> List[Dict[str, Any]]:
+    """
+    Shared retrieval logic used by both retrieval_node and retrieval_node_retry.
+    Accepts the query string explicitly so the retry node can pass the
+    rewritten query without touching state["query"].
+    """
     db = state.get("db")
     user_id = state.get("user_id")
     intent = state.get("intent", "qa")
-
-    # Use intent-specific top_k for broader or narrower retrieval
     top_k = INTENT_TOP_K.get(intent, settings.TOP_K_CHUNKS)
 
     try:
-        query_embedding = get_query_embedding(state["query"])
+        query_embedding = get_query_embedding(query)
         faiss_store = get_faiss_store()
 
         results = faiss_store.search(
@@ -99,7 +118,6 @@ def retrieval_node(state: AgentState) -> AgentState:
             chunk_db_id = meta.get("chunk_db_id")
             content = None
 
-            # Fetch full content from DB
             if db and chunk_db_id:
                 try:
                     chunk = db.query(Chunk).filter(Chunk.id == chunk_db_id).first()
@@ -110,7 +128,6 @@ def retrieval_node(state: AgentState) -> AgentState:
 
             if not content:
                 content = meta.get("content_preview", "")
-
             if not content:
                 continue
 
@@ -135,21 +152,143 @@ def retrieval_node(state: AgentState) -> AgentState:
                 "chunk_db_id": chunk_db_id,
             })
 
-        logger.info(
-            f"Retrieval intent={intent} user={user_id} "
-            f"query='{state['query'][:60]}' "
-            f"→ {len(chunks_data)}/{top_k} chunks "
-            f"(best={chunks_data[0]['similarity'] if chunks_data else 'none'})"
-        )
-
     except Exception as e:
         logger.exception(f"Retrieval failed: {e}")
         chunks_data = []
 
+    return chunks_data
+
+
+def retrieval_node(state: AgentState) -> AgentState:
+    chunks_data = _do_retrieval(state["query"], state)
+
+    top_score = chunks_data[0]["similarity"] if chunks_data else 0
+    logger.info(
+        f"Retrieval intent={state.get('intent')} user={state.get('user_id')} "
+        f"query='{state['query'][:60]}' "
+        f"→ {len(chunks_data)} chunks (best={top_score})"
+    )
     return {**state, "retrieved_chunks": chunks_data}
 
 
-# ── Node 3: Response Generator ─────────────────────────────────────────────────
+# ── Conditional Edge: route after retrieval ────────────────────────────────────
+
+# If the best chunk score is below this threshold, retrieval is considered poor
+# and we branch to the query rewrite node instead of going straight to response.
+REWRITE_THRESHOLD = 0.30
+
+
+def route_after_retrieval(state: AgentState) -> str:
+    """
+    Decides the next node after retrieval_node.
+
+    Returns:
+        "query_rewrite"  — top score is low, try rephrasing the query
+        "response_node"  — retrieval looks good, generate the answer
+    """
+    chunks = state.get("retrieved_chunks", [])
+
+    if not chunks:
+        # No results at all — rewrite and retry
+        logger.info("route_after_retrieval: no chunks found → query_rewrite")
+        return "query_rewrite"
+
+    top_score = chunks[0]["similarity"]
+
+    if top_score < REWRITE_THRESHOLD:
+        logger.info(
+            f"route_after_retrieval: low confidence ({top_score:.3f} < "
+            f"{REWRITE_THRESHOLD}) → query_rewrite"
+        )
+        return "query_rewrite"
+
+    logger.info(
+        f"route_after_retrieval: good confidence ({top_score:.3f}) → response_node"
+    )
+    return "response_node"
+
+
+# ── Node 3: Query Rewrite ──────────────────────────────────────────────────────
+
+REWRITE_SYSTEM = (
+    "You are a search query optimizer for a student placement preparation assistant. "
+    "Your only job is to rewrite a student's question into a better search query "
+    "that will find relevant content in technical study notes about topics like "
+    "operating systems, databases, data structures, microcontrollers, and programming. "
+    "Output ONLY the rewritten query — no explanation, no preamble, no punctuation at the end."
+)
+
+REWRITE_PROMPT = """The following student question did not retrieve good results from the study material database.
+Rewrite it as a clearer, more specific search query that is more likely to match technical notes.
+
+Rules:
+- Keep it short (5-10 words)
+- Use technical keywords the notes would contain
+- Remove conversational filler ("can you", "please", "I want to know")
+- If the question is already technical, try a synonym or broader/narrower phrasing
+
+Original question: {query}
+
+Rewritten query:"""
+
+
+def query_rewrite_node(state: AgentState) -> AgentState:
+    """
+    Uses Groq to rephrase the original query into a better search query,
+    then stores the result in state["rewritten_query"].
+    The actual retry retrieval happens in retrieval_node_retry.
+    """
+    original_query = state["query"]
+
+    try:
+        response = _client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": REWRITE_SYSTEM},
+                {"role": "user", "content": REWRITE_PROMPT.format(query=original_query)},
+            ],
+            max_tokens=60,
+            temperature=0.3,
+        )
+        rewritten = response.choices[0].message.content.strip()
+
+        # Safety: if Groq returns something too long or empty, fall back
+        if not rewritten or len(rewritten) > 200:
+            rewritten = original_query
+
+        logger.info(
+            f"query_rewrite_node: '{original_query[:60]}' "
+            f"→ '{rewritten[:60]}'"
+        )
+
+    except Exception as e:
+        logger.warning(f"Query rewrite failed: {e} — using original query")
+        rewritten = original_query
+
+    return {**state, "rewritten_query": rewritten, "was_rewritten": True}
+
+
+# ── Node 4: Retrieval Retry ────────────────────────────────────────────────────
+
+def retrieval_node_retry(state: AgentState) -> AgentState:
+    """
+    Runs retrieval again using the rewritten query.
+    If the retry also returns poor results, we keep whatever we got
+    (response_node handles empty chunks gracefully with a general-knowledge fallback).
+    """
+    rewritten_query = state.get("rewritten_query") or state["query"]
+    chunks_data = _do_retrieval(rewritten_query, state)
+
+    top_score = chunks_data[0]["similarity"] if chunks_data else 0
+    logger.info(
+        f"retrieval_node_retry: rewritten='{rewritten_query[:60]}' "
+        f"→ {len(chunks_data)} chunks (best={top_score})"
+    )
+
+    return {**state, "retrieved_chunks": chunks_data}
+
+
+# ── Node 5: Response Generator ─────────────────────────────────────────────────
 
 FIDELITY_INSTRUCTION = """
 CRITICAL INSTRUCTIONS — follow these without exception:
@@ -326,6 +465,10 @@ Cover different aspects of the topic across the 5 questions.
 def response_node(state: AgentState) -> AgentState:
     intent = state.get("intent", "qa")
     chunks = state.get("retrieved_chunks", [])
+    was_rewritten = state.get("was_rewritten", False)
+    rewritten_query = state.get("rewritten_query", "")
+
+    # Use the original query for display; the rewritten one was only for retrieval
     query = state["query"]
 
     history_parts = []
@@ -344,7 +487,15 @@ def response_node(state: AgentState) -> AgentState:
                 f"{heading}{c['content']}"
             )
         context = "\n\n---\n\n".join(context_parts)
-        prefix = "📚 *Answer based on your uploaded study materials.*\n\n"
+
+        # Tell the user if the answer used a rewritten query
+        if was_rewritten:
+            prefix = (
+                f"📚 *Answer based on your uploaded study materials.*\n"
+                f"> 🔄 *Your question was automatically rephrased to improve search results.*\n\n"
+            )
+        else:
+            prefix = "📚 *Answer based on your uploaded study materials.*\n\n"
     else:
         context = "No relevant content found in the uploaded study materials for this query."
         prefix = (
@@ -367,11 +518,7 @@ def response_node(state: AgentState) -> AgentState:
                 {"role": "system", "content": SYSTEM_BASE},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=4096,   # kept at 4096 — this account's Groq on_demand tier caps
-                                # llama-3.3-70b-versatile at 12,000 tokens/minute (TPM).
-                                # 8192 pushed requests (input + max_tokens) over that cap and
-                                # caused 413 "Request too large" errors. If you upgrade to
-                                # Groq's Dev tier (higher TPM), this can be raised again.
+            max_tokens=4096,
             temperature=0.2,
         )
         raw_answer = response.choices[0].message.content
@@ -388,7 +535,6 @@ def response_node(state: AgentState) -> AgentState:
             "heading": c["heading"],
             "similarity": c["similarity"],
             "confidence": c["confidence"],
-            # Increased from 200 to 400 chars so source badge shows meaningful context
             "content_preview": (
                 c["content"][:400] + "..."
                 if len(c["content"]) > 400
@@ -405,13 +551,40 @@ def response_node(state: AgentState) -> AgentState:
 
 def build_graph():
     workflow = StateGraph(AgentState)
+
+    # Register all nodes
     workflow.add_node("intent_router", intent_router)
     workflow.add_node("retrieval_node", retrieval_node)
+    workflow.add_node("query_rewrite_node", query_rewrite_node)
+    workflow.add_node("retrieval_node_retry", retrieval_node_retry)
     workflow.add_node("response_node", response_node)
+
+    # Entry point
     workflow.set_entry_point("intent_router")
+
+    # Linear edges
     workflow.add_edge("intent_router", "retrieval_node")
-    workflow.add_edge("retrieval_node", "response_node")
+
+    # ── CONDITIONAL EDGE ──────────────────────────────────────────────────────
+    # After first retrieval, check confidence.
+    # Good confidence  → go straight to response_node
+    # Poor confidence  → rewrite query, retry retrieval, then response_node
+    workflow.add_conditional_edges(
+        "retrieval_node",
+        route_after_retrieval,
+        {
+            "response_node":  "response_node",
+            "query_rewrite":  "query_rewrite_node",
+        }
+    )
+
+    # Rewrite path: rewrite → retry retrieval → response
+    workflow.add_edge("query_rewrite_node", "retrieval_node_retry")
+    workflow.add_edge("retrieval_node_retry", "response_node")
+
+    # End
     workflow.add_edge("response_node", END)
+
     return workflow.compile()
 
 
@@ -434,6 +607,8 @@ def run_agent(
     graph = get_graph()
     initial_state: AgentState = {
         "query": query,
+        "rewritten_query": None,
+        "was_rewritten": False,
         "user_id": user_id,
         "intent": None,
         "retrieved_chunks": [],
@@ -450,22 +625,7 @@ def run_agent(
     }
 
 
-# ── Streaming variant (used by /chat/query/stream) ─────────────────────────────
-#
-# LangGraph's compiled graph.invoke() runs all nodes synchronously and only
-# returns once the whole answer string exists — it has no notion of partial
-# output, so it can't be used to stream tokens to the frontend as-is.
-#
-# To stream, this function calls the EXACT SAME `intent_router` and
-# `retrieval_node` functions above, in the same order, with the same
-# arguments — so retrieval behaves identically to the non-streaming path.
-# The only difference is the final generation step: instead of calling Groq
-# once and waiting for the full completion (as response_node does), this
-# calls Groq with stream=True and yields each token/delta as soon as it
-# arrives, plus small status events the frontend can show while waiting.
-#
-# run_agent() and build_graph()/response_node() above are untouched and still
-# power the original /chat/query endpoint exactly as before.
+# ── Streaming variant ──────────────────────────────────────────────────────────
 
 def run_agent_stream(
     query: str,
@@ -474,17 +634,16 @@ def run_agent_stream(
     user_id: int,
 ):
     """
-    Generator yielding dicts of the form:
-      {"type": "status", "message": "..."}                      — progress text
-      {"type": "chunk",  "content": "..."}                       — a piece of the answer
-      {"type": "done",   "answer": "...", "sources": [...], "intent": "..."}  — final result
-      {"type": "error",  "message": "..."}                       — fatal error (rare; normally
-                                                                     errors are folded into the
-                                                                     answer text like the
-                                                                     non-streaming path does)
+    Generator yielding dicts:
+      {"type": "status",  "message": "..."}
+      {"type": "chunk",   "content": "..."}
+      {"type": "done",    "answer": "...", "sources": [...], "intent": "..."}
+      {"type": "error",   "message": "..."}
     """
     state: AgentState = {
         "query": query,
+        "rewritten_query": None,
+        "was_rewritten": False,
         "user_id": user_id,
         "intent": None,
         "retrieved_chunks": [],
@@ -494,16 +653,28 @@ def run_agent_stream(
         "db": db,
     }
 
-    # Same node, same logic, same order as the compiled graph
+    # Node 1: intent
     state = intent_router(state)
 
+    # Node 2: first retrieval
     yield {"type": "status", "message": "🔍 Searching relevant documents..."}
-    state = retrieval_node(state)  # identical retrieval_node function used by build_graph()
+    state = retrieval_node(state)
 
+    # Conditional edge
+    route = route_after_retrieval(state)
+
+    if route == "query_rewrite":
+        yield {"type": "status", "message": "🔄 Refining your question for better results..."}
+        state = query_rewrite_node(state)
+
+        yield {"type": "status", "message": "🔍 Searching again with refined query..."}
+        state = retrieval_node_retry(state)
+
+    # Build context + prompt (identical to response_node logic)
     intent = state.get("intent", "qa")
     chunks = state.get("retrieved_chunks", [])
+    was_rewritten = state.get("was_rewritten", False)
 
-    # ---- identical context/prompt construction to response_node() above ----
     history_parts = []
     for msg in (chat_history or [])[-6:]:
         role = msg.get("role", "user").capitalize()
@@ -520,7 +691,14 @@ def run_agent_stream(
                 f"{heading}{c['content']}"
             )
         context = "\n\n---\n\n".join(context_parts)
-        prefix = "📚 *Answer based on your uploaded study materials.*\n\n"
+
+        if was_rewritten:
+            prefix = (
+                f"📚 *Answer based on your uploaded study materials.*\n"
+                f"> 🔄 *Your question was automatically rephrased to improve search results.*\n\n"
+            )
+        else:
+            prefix = "📚 *Answer based on your uploaded study materials.*\n\n"
     else:
         context = "No relevant content found in the uploaded study materials for this query."
         prefix = (
