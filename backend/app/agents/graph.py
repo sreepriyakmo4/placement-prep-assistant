@@ -177,6 +177,11 @@ def retrieval_node(state: AgentState) -> AgentState:
 # and we branch to the query rewrite node instead of going straight to response.
 REWRITE_THRESHOLD = 0.30
 
+# If the best chunk score is still below this threshold even after retry,
+# the topic is not truly covered in the uploaded resources. Fall back to
+# general knowledge with a disclaimer instead of using irrelevant chunks.
+FINAL_RELEVANCE_THRESHOLD = 0.40
+
 
 def route_after_retrieval(state: AgentState) -> str:
     """
@@ -471,6 +476,17 @@ def response_node(state: AgentState) -> AgentState:
     # Use the original query for display; the rewritten one was only for retrieval
     query = state["query"]
 
+    # ── FINAL RELEVANCE CHECK ──
+    # If the best retrieved chunk has similarity below the threshold, the topic is
+    # likely not actually covered in the uploaded resources. Discard the chunks and
+    # fall back to general knowledge with a disclaimer instead.
+    if chunks and chunks[0]["similarity"] < FINAL_RELEVANCE_THRESHOLD:
+        logger.info(
+            f"Final relevance check failed: top chunk score {chunks[0]['similarity']:.3f} < "
+            f"{FINAL_RELEVANCE_THRESHOLD} → discarding chunks, using general knowledge fallback"
+        )
+        chunks = []
+
     history_parts = []
     for msg in (state.get("chat_history") or [])[-6:]:
         role = msg.get("role", "user").capitalize()
@@ -670,9 +686,20 @@ def run_agent_stream(
         yield {"type": "status", "message": "🔍 Searching again with refined query..."}
         state = retrieval_node_retry(state)
 
+    # ── FINAL RELEVANCE CHECK ──
+    # If the best retrieved chunk has similarity below the threshold, the topic is
+    # likely not actually covered in the uploaded resources. Discard the chunks and
+    # fall back to general knowledge with a disclaimer instead.
+    chunks = state.get("retrieved_chunks", [])
+    if chunks and chunks[0]["similarity"] < FINAL_RELEVANCE_THRESHOLD:
+        logger.info(
+            f"Final relevance check failed: top chunk score {chunks[0]['similarity']:.3f} < "
+            f"{FINAL_RELEVANCE_THRESHOLD} → discarding chunks, using general knowledge fallback"
+        )
+        chunks = []
+
     # Build context + prompt (identical to response_node logic)
     intent = state.get("intent", "qa")
-    chunks = state.get("retrieved_chunks", [])
     was_rewritten = state.get("was_rewritten", False)
 
     history_parts = []
