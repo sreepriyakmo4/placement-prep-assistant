@@ -2,7 +2,7 @@
 RAG Retrieval Evaluation Script
 Measures: did FAISS return a chunk from the correct document for each question?
 
-Run from the backend/ folder:
+Run from the backend/ folder (or inside the backend container):
     python -m eval.run_retrieval_eval
 """
 
@@ -19,6 +19,7 @@ from app.retrieval.faiss_store import get_faiss_store
 GOLDEN_SET_PATH = os.path.join(os.path.dirname(__file__), "golden_set.json")
 TOP_K = 5
 USER_ID = 1  # your user id in the app
+PREVIEW_CHARS = 180  # how much of each chunk's content to print for inspection
 
 
 def run_eval():
@@ -56,21 +57,36 @@ def run_eval():
         retrieved_filenames = [meta.get("filename", "") for _, meta in results]
         hit = any(expected_filename in fname for fname in retrieved_filenames)
 
-        status = "✅ PASS" if hit else "❌ FAIL"
+        status = "PASS" if hit else "FAIL"
         if hit:
             passed += 1
         else:
             failed += 1
             failed_questions.append(question)
 
-        # Show top result score for context
-        top_score = round(results[0][0], 3) if results else 0
-        print(f"Q{i+1}: {status} | score={top_score} | {question[:55]}")
+        print(f"Q{i+1}: {status} | {question}")
+
+        # DEBUG VIEW: show ALL top-K retrieved chunks, not just #1.
+        # Printing only the top result was misleading -- a question could
+        # "pass" the file-level check while its #1 ranked chunk was
+        # completely irrelevant, as long as a relevant chunk existed
+        # somewhere else in the file. Showing all K results lets you see
+        # exactly where (if anywhere) the truly relevant chunk landed --
+        # which is what you need to manually label expected_snippet values
+        # and to eyeball ranking quality, not just file-level presence.
+        if not results:
+            print("      (no results returned)")
+        for rank, (score, meta) in enumerate(results, start=1):
+            preview = meta.get("content_preview", "")[:PREVIEW_CHARS].replace("\n", " ")
+            heading = meta.get("heading", "") or "(no heading)"
+            print(f"      rank {rank} | score={round(score, 3)} | heading='{heading}'")
+            print(f"                 {preview}...")
+        print()
 
     total = passed + failed
     precision = round((passed / total) * 100, 1)
 
-    print(f"\n{'='*60}")
+    print(f"{'='*60}")
     print(f"RESULTS")
     print(f"{'='*60}")
     print(f"Passed:     {passed}/{total}")
@@ -83,7 +99,7 @@ def run_eval():
             print(f"  - {q}")
 
     print(f"\n{'='*60}")
-    
+
     print(f"RESUME METRIC: Retrieval Precision@{TOP_K} = {precision}%")
     print(f"{'='*60}\n")
 

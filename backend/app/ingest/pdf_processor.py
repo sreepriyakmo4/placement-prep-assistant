@@ -19,7 +19,6 @@ def extract_text_from_pdf(file_bytes: bytes) -> List[Dict]:
     doc.close()
     return pages
 
-
 def _clean_text(text: str) -> str:
     """Remove excessive whitespace while preserving paragraph breaks."""
     # Normalize multiple blank lines to double newline (paragraph break)
@@ -47,12 +46,13 @@ def split_into_chunks(pages: List[Dict]) -> List[Dict]:
        into the next chunk (context continuity)
     4. Track page number for every chunk (for source display)
     5. Detect headings and always start a new chunk at a heading
-    
+
     Returns list of {content, page_num, chunk_index, heading} dicts.
     """
     TARGET_CHARS = 1400    # ~350 tokens — sweet spot for MiniLM retrieval
     MAX_CHARS = 2000       # hard cap
     OVERLAP_CHARS = 300    # carry last ~300 chars into next chunk
+    MAX_HEADING_LEN = 80   # a real heading is a short title, not a sentence
 
     heading_pattern = re.compile(
         r'^(?:'
@@ -108,8 +108,23 @@ def split_into_chunks(pages: List[Dict]) -> List[Dict]:
                 overlap_text = ""
 
         for para in paragraphs:
-            is_heading = bool(heading_pattern.match(para)) or (
-                len(para) < 80 and para.endswith(':')
+            # BUG FIX: a numbered/all-caps/etc. line only counts as a real
+            # heading if it's also SHORT (a title, not a sentence).
+            #
+            # Without the length check, numbered list items containing real
+            # content -- e.g. "1. SQL: Structured Query Language, used to
+            # access and manipulate data." -- matched the same regex as a
+            # genuine heading like "1. Introduction". Because matched
+            # "headings" have their text discarded (see `continue` below,
+            # only `current_heading` is set, the paragraph is never added to
+            # current_chunk_paras), whole pages that were mostly numbered
+            # lists ended up having almost all of their real content silently
+            # dropped -- each numbered line overwrote current_heading and
+            # vanished, one after another, with nothing actually saved as
+            # retrievable chunk content.
+            looks_like_heading_pattern = bool(heading_pattern.match(para))
+            is_heading = (looks_like_heading_pattern and len(para) < MAX_HEADING_LEN) or (
+                len(para) < MAX_HEADING_LEN and para.endswith(':')
             )
 
             # Start a new chunk at every heading

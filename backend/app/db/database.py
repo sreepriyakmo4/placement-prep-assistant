@@ -38,3 +38,4 @@ async def create_tables():
     async with engine.begin() as conn:
         from app.db import models  # noqa
         await conn.run_sync(Base.metadata.create_all)
+

@@ -1,6 +1,7 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.config import settings
 from app.db.base import Base, engine, SessionLocal
 from app.api import auth, documents, chat, quiz
 
@@ -11,6 +12,12 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# NOTE: SECRET_KEY / GROQ_API_KEY are validated in app/core/config.py
+# (field_validator on the Settings class). Importing `settings` above
+# already triggers that validation — if either key is missing, empty,
+# or the insecure placeholder, the process exits before we even get here.
+# No need to duplicate that check in this file.
+
 # Create all DB tables on startup
 Base.metadata.create_all(bind=engine)
 
@@ -20,9 +27,11 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Origins come from settings.CORS_ORIGINS (env-driven) instead of being
+# hardcoded, so this can be locked down per-environment.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

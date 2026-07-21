@@ -409,7 +409,7 @@ PREVIOUS CONVERSATION:
 
 TOPIC: {query}
 
-Generate exactly 5 MCQs. Each question MUST be directly answerable from the context above.
+Generate exactly 10 MCQs. Each question MUST be directly answerable from the context above.
 Cover DIFFERENT aspects from the context — do not repeat the same concept twice.
 The correct answer must use the exact wording from the study material.
 
@@ -423,12 +423,12 @@ B) [Option]
 C) [Option]
 D) [Option]
 
-[Repeat for Q2–Q5]
+[Repeat for Q2–Q10]
 
 ---
 **ANSWERS:**
 Q1: [Letter] — [Exact phrase from notes that confirms this answer]
-[Repeat for Q2–Q5]""",
+[Repeat for Q2–Q10]""",
 
     "interview": """{fidelity}
 

@@ -10,6 +10,9 @@ from app.ingest.pipeline import ingest_document
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+PDF_MAGIC_BYTES = b"%PDF-"
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
+
 
 class DocumentOut(BaseModel):
     id: int
@@ -32,6 +35,21 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     file_bytes = await file.read()
+
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    if not file_bytes.startswith(PDF_MAGIC_BYTES):
+        raise HTTPException(
+            status_code=400,
+            detail="File content does not look like a valid PDF",
+        )
+
+    if len(file_bytes) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds the {MAX_UPLOAD_SIZE // (1024 * 1024)}MB upload limit",
+        )
 
     doc = Document(user_id=current_user.id, filename=file.filename, status="pending")
     db.add(doc)
@@ -84,4 +102,3 @@ def delete_document(
     db.delete(doc)
     db.commit()
     return {"message": "Deleted"}
-
