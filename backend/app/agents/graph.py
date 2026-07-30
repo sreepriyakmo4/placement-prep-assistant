@@ -23,6 +23,7 @@ Graph structure:
 - Intent-aware retrieval: explain/quiz/interview fetch MORE chunks
 - Confidence scoring based on cosine similarity
 - Graceful fallback to general knowledge when no relevant chunks found
+- Hybrid retrieval: FAISS (semantic) + BM25 (keyword) supplementing it
 """
 import logging
 from typing import TypedDict, List, Optional, Dict, Any
@@ -90,12 +91,51 @@ INTENT_TOP_K = {
     "interview": 10,
 }
 
+# ── Hybrid retrieval tuning ──────────────────────────────────────────────────
+# BM25 scores are on a completely different, unbounded scale than FAISS cosine
+# similarity (0.0-1.0), so they are never merged/normalized against each
+# other numerically. Instead, BM25 only SUPPLEMENTS results FAISS missed
+# entirely, tagged with a fixed conservative score:
+#   - high enough to survive the 0.30 REWRITE_THRESHOLD (won't trigger an
+#     unnecessary retry just because a keyword-only hit came back)
+#   - low enough that it can never, by itself, pass the stricter 0.40
+#     FINAL_RELEVANCE_THRESHOLD in response_node - a keyword match alone
+#     isn't the same confidence signal as a strong FAISS cosine match.
+BM25_SUPPLEMENT_SCORE = 0.35
+BM25_TOP_K = 5
+
+
+def _do_bm25_search(query: str, user_id, db):
+    """
+    Runs BM25Store against the same query. Returns [] on any failure
+    (missing db/user_id, empty index, import error, etc.) so hybrid
+    retrieval degrades gracefully back to FAISS-only rather than breaking
+    the query.
+    """
+    if not db or user_id is None:
+        return []
+    try:
+        from app.retrieval.bm25_store import BM25Store
+        store = BM25Store(db, user_id)
+        return store.search(query, top_k=BM25_TOP_K)
+    except Exception as e:
+        logger.warning(f"BM25 search failed: {e}")
+        return []
+
 
 def _do_retrieval(query: str, state: AgentState) -> List[Dict[str, Any]]:
     """
     Shared retrieval logic used by both retrieval_node and retrieval_node_retry.
     Accepts the query string explicitly so the retry node can pass the
     rewritten query without touching state["query"].
+
+    Hybrid retrieval: FAISS (semantic) results are computed first and remain
+    authoritative for confidence scoring. BM25 (keyword) results are merged
+    in afterward, but ONLY chunks that FAISS didn't already surface - these
+    catch exact keyword/acronym queries embeddings can miss (e.g. "DDL"),
+    tagged with a conservative synthetic score so they never override a
+    strong FAISS signal or single-handedly pass the stricter final
+    relevance gate in response_node.
     """
     db = state.get("db")
     user_id = state.get("user_id")
@@ -155,6 +195,32 @@ def _do_retrieval(query: str, state: AgentState) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.exception(f"Retrieval failed: {e}")
         chunks_data = []
+
+    # ── Hybrid step: supplement with BM25 keyword matches FAISS missed ──
+    existing_ids = {c["chunk_db_id"] for c in chunks_data if c.get("chunk_db_id")}
+    bm25_results = _do_bm25_search(query, user_id, db)
+
+    for bm25_score, meta in bm25_results:
+        chunk_db_id = meta.get("chunk_db_id")
+        if chunk_db_id in existing_ids:
+            continue  # FAISS already surfaced this chunk - don't duplicate
+
+        chunks_data.append({
+            "content": meta.get("content", ""),
+            "similarity": BM25_SUPPLEMENT_SCORE,
+            "confidence": "Keyword Match",
+            "filename": meta.get("filename", "Unknown"),
+            "page_num": meta.get("page_num", "?"),
+            "heading": meta.get("heading", ""),
+            "chunk_index": meta.get("chunk_index", 0),
+            "document_id": meta.get("document_id"),
+            "chunk_db_id": chunk_db_id,
+        })
+        existing_ids.add(chunk_db_id)
+
+    # Re-sort combined FAISS + BM25 results, strongest signal first
+    chunks_data.sort(key=lambda c: c["similarity"], reverse=True)
+    chunks_data = chunks_data[:top_k]
 
     return chunks_data
 

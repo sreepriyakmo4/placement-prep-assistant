@@ -1,14 +1,17 @@
 import json
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import List, Optional
 from datetime import datetime
-from app.db.base import get_db
-from app.db.models import Session as ChatSession, Message, User
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
 from app.api.deps import get_current_user
 from app.agents.graph import run_agent, run_agent_stream
+from app.core.limiter import limiter
+from app.db.base import get_db
+from app.db.models import Message, Session as ChatSession, User
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -46,7 +49,9 @@ class QueryResponse(BaseModel):
 
 
 @router.post("/query", response_model=QueryResponse)
+@limiter.limit("10/minute")
 def query(
+    request: Request,
     body: QueryRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -55,10 +60,12 @@ def query(
     if body.session_id:
         session = db.query(ChatSession).filter(
             ChatSession.id == body.session_id,
-            ChatSession.user_id == current_user.id
+            ChatSession.user_id == current_user.id,
         ).first()
+
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+
     else:
         title = body.query[:50] + ("..." if len(body.query) > 50 else "")
         session = ChatSession(user_id=current_user.id, title=title)
@@ -67,18 +74,28 @@ def query(
         db.refresh(session)
 
     # Build chat history
-    existing_messages = db.query(Message).filter(
-        Message.session_id == session.id
-    ).order_by(Message.created_at).all()
+    existing_messages = (
+        db.query(Message)
+        .filter(Message.session_id == session.id)
+        .order_by(Message.created_at)
+        .all()
+    )
 
-    chat_history = [{"role": m.role, "content": m.content} for m in existing_messages]
+    chat_history = [
+        {"role": m.role, "content": m.content}
+        for m in existing_messages
+    ]
 
     # Save user message
-    user_msg = Message(session_id=session.id, role="user", content=body.query)
+    user_msg = Message(
+        session_id=session.id,
+        role="user",
+        content=body.query,
+    )
     db.add(user_msg)
     db.commit()
 
-    # Run agent — now passes user_id for per-user FAISS filtering
+    # Run agent
     result = run_agent(
         query=body.query,
         chat_history=chat_history,
@@ -105,41 +122,53 @@ def query(
 
 
 @router.post("/query/stream")
+@limiter.limit("10/minute")
 def query_stream(
+    request: Request,
     body: QueryRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Server-Sent Events version of /chat/query.
-
-    Does the exact same session lookup/creation, chat history build, and user
-    message save as /chat/query above. The only difference is that instead of
-    calling run_agent() and waiting for the complete answer, it calls
-    run_agent_stream() and forwards each event to the client as soon as it's
-    produced, then saves the assistant message to the DB once the stream
-    finishes — so chat history/session behavior is identical to /chat/query.
     """
+
     if body.session_id:
         session = db.query(ChatSession).filter(
             ChatSession.id == body.session_id,
-            ChatSession.user_id == current_user.id
+            ChatSession.user_id == current_user.id,
         ).first()
+
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+
     else:
         title = body.query[:50] + ("..." if len(body.query) > 50 else "")
-        session = ChatSession(user_id=current_user.id, title=title)
+        session = ChatSession(
+            user_id=current_user.id,
+            title=title,
+        )
         db.add(session)
         db.commit()
         db.refresh(session)
 
-    existing_messages = db.query(Message).filter(
-        Message.session_id == session.id
-    ).order_by(Message.created_at).all()
-    chat_history = [{"role": m.role, "content": m.content} for m in existing_messages]
+    existing_messages = (
+        db.query(Message)
+        .filter(Message.session_id == session.id)
+        .order_by(Message.created_at)
+        .all()
+    )
 
-    user_msg = Message(session_id=session.id, role="user", content=body.query)
+    chat_history = [
+        {"role": m.role, "content": m.content}
+        for m in existing_messages
+    ]
+
+    user_msg = Message(
+        session_id=session.id,
+        role="user",
+        content=body.query,
+    )
     db.add(user_msg)
     db.commit()
 
@@ -148,8 +177,6 @@ def query_stream(
     user_id = current_user.id
 
     def event_generator():
-        # Tell the frontend which session this belongs to right away (needed
-        # for brand-new chats where the session didn't exist before this call)
         yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
 
         final_answer = ""
@@ -166,11 +193,9 @@ def query_stream(
                 final_answer = event.get("answer", "")
                 final_sources = event.get("sources", [])
                 final_intent = event.get("intent", "qa")
+
             yield f"data: {json.dumps(event)}\n\n"
 
-        # Persist the assistant message once streaming is complete — mirrors
-        # the save step in /chat/query above, just done after the stream ends
-        # instead of after a single blocking call.
         assistant_msg = Message(
             session_id=session_id,
             role="assistant",
@@ -185,7 +210,7 @@ def query_stream(
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable proxy buffering (nginx) so chunks flush immediately
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -195,9 +220,13 @@ def list_sessions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    sessions = db.query(ChatSession).filter(
-        ChatSession.user_id == current_user.id
-    ).order_by(ChatSession.created_at.desc()).all()
+    sessions = (
+        db.query(ChatSession)
+        .filter(ChatSession.user_id == current_user.id)
+        .order_by(ChatSession.created_at.desc())
+        .all()
+    )
+
     return sessions
 
 
@@ -209,14 +238,19 @@ def get_session_messages(
 ):
     session = db.query(ChatSession).filter(
         ChatSession.id == session_id,
-        ChatSession.user_id == current_user.id
+        ChatSession.user_id == current_user.id,
     ).first()
+
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    messages = db.query(Message).filter(
-        Message.session_id == session_id
-    ).order_by(Message.created_at).all()
+    messages = (
+        db.query(Message)
+        .filter(Message.session_id == session_id)
+        .order_by(Message.created_at)
+        .all()
+    )
+
     return messages
 
 
@@ -228,10 +262,13 @@ def delete_session(
 ):
     session = db.query(ChatSession).filter(
         ChatSession.id == session_id,
-        ChatSession.user_id == current_user.id
+        ChatSession.user_id == current_user.id,
     ).first()
+
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
     db.delete(session)
     db.commit()
+
     return {"message": "Deleted"}

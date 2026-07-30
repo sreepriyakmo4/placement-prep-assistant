@@ -9,7 +9,7 @@ import json
 import logging
 from typing import List, Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -17,6 +17,7 @@ from app.db.base import get_db
 from app.db.models import User, Document, Chunk, QuizQuestion, QuizAttempt, QuizAnswer
 from app.api.deps import get_current_user
 from app.core.config import settings
+from app.core.limiter import limiter
 from groq import Groq
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,9 @@ class QuizAttemptOut(BaseModel):
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 @router.post("/generate/{doc_id}", response_model=QuizGenerateResponse)
+@limiter.limit("5/minute")
 def generate_quiz(
+    request: Request,
     doc_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

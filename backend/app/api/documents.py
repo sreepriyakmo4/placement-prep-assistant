@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List
@@ -7,6 +7,7 @@ from app.db.base import get_db
 from app.db.models import Document, User
 from app.api.deps import get_current_user
 from app.ingest.pipeline import ingest_document
+from app.core.limiter import limiter
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -25,7 +26,9 @@ class DocumentOut(BaseModel):
 
 
 @router.post("/upload", response_model=DocumentOut)
+@limiter.limit("5/minute")
 async def upload_document(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),

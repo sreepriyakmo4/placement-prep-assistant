@@ -1,6 +1,12 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# NEW IMPORTS
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.core.limiter import limiter
+
 from app.core.config import settings
 from app.db.base import Base, engine, SessionLocal
 from app.api import auth, documents, chat, quiz
@@ -25,6 +31,15 @@ app = FastAPI(
     title="Placement Preparation Assistant API",
     description="AI-powered placement preparation with RAG and LangGraph",
     version="1.0.0",
+)
+
+# -------------------------------
+# Rate Limiter Configuration
+# -------------------------------
+app.state.limiter = limiter
+app.add_exception_handler(
+    RateLimitExceeded,
+    _rate_limit_exceeded_handler,
 )
 
 # Origins come from settings.CORS_ORIGINS (env-driven) instead of being
@@ -119,12 +134,14 @@ def _rebuild_faiss_if_needed():
             # Update faiss_id back in DB
             for chunk, fid in zip(chunks, faiss_ids):
                 chunk.faiss_id = fid
+
             db.commit()
 
             logger.info(
                 f"FAISS rebuild complete: {len(faiss_ids)} vectors indexed. "
                 f"Index now has {store.index.ntotal} total vectors."
             )
+
         else:
             logger.info(
                 f"FAISS index OK: {faiss_count} vectors "
@@ -133,6 +150,7 @@ def _rebuild_faiss_if_needed():
 
     except Exception as e:
         logger.exception(f"FAISS rebuild check failed: {e}")
+
     finally:
         db.close()
 
@@ -150,10 +168,17 @@ def on_startup():
 def health():
     try:
         from app.retrieval.faiss_store import get_faiss_store
+
         store = get_faiss_store()
+
         return {
             "status": "ok",
             "faiss_vectors": store.index.ntotal,
         }
+
     except Exception as e:
-        return {"status": "ok", "faiss_error": str(e)}
+        return {
+            "status": "ok",
+            "faiss_error": str(e),
+        }
+        
