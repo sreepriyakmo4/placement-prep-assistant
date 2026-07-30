@@ -65,7 +65,7 @@ def intent_router(state: AgentState) -> AgentState:
                     "generate questions", "practice questions"]
     interview_kw = ["interview", "ask me", "interviewer", "prepare me",
                     "mock interview", "conduct interview"]
-    explain_kw   = ["explain", "how does", "how do", "what is", "describe",
+    explain_kw   = ["explain", "how does", "how do", "describe", "describe",
                     "elaborate", "detail", "tell me about", "walk me through",
                     "types of", "list", "difference between", "compare",
                     "advantages", "disadvantages", "features of"]
