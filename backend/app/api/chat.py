@@ -46,6 +46,7 @@ class QueryResponse(BaseModel):
     sources: List[dict]
     intent: str
     session_id: int
+    grounding: Optional[dict] = None
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -118,6 +119,7 @@ def query(
         sources=result["sources"],
         intent=result["intent"],
         session_id=session.id,
+        grounding=result.get("grounding"),
     )
 
 
@@ -131,6 +133,10 @@ def query_stream(
 ):
     """
     Server-Sent Events version of /chat/query.
+
+    The "done" event yielded by run_agent_stream now also includes a
+    "grounding" field — no change needed here, since this endpoint already
+    forwards the raw event dict as-is via json.dumps(event).
     """
 
     if body.session_id:

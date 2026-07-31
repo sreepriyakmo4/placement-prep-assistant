@@ -51,6 +51,29 @@ export interface ChatStreamEvent {
   intent?: string
 }
 
+// Parses whatever SSE text has arrived so far into complete events + leftover.
+// Exported on its own (separate from the network code) so it can be unit
+// tested directly with plain strings, without needing to fake a real stream.
+export function parseSSEBuffer(buffer: string): { events: ChatStreamEvent[]; remainder: string } {
+  const chunks = buffer.split('\n\n')
+  const remainder = chunks.pop() ?? ''
+
+  const events: ChatStreamEvent[] = []
+  for (const rawEvent of chunks) {
+    const line = rawEvent.trim()
+    if (!line.startsWith('data:')) continue
+    const jsonStr = line.slice(5).trim()
+    if (!jsonStr) continue
+    try {
+      events.push(JSON.parse(jsonStr) as ChatStreamEvent)
+    } catch {
+      // ignore a partial/malformed chunk rather than killing the stream
+    }
+  }
+
+  return { events, remainder }
+}
+
 // Chat
 export const chatApi = {
   // Original non-streaming call — left exactly as before. The /chat/query
@@ -109,20 +132,11 @@ export const chatApi = {
 
       buffer += decoder.decode(value, { stream: true })
 
-      // SSE events are separated by a blank line ("\n\n")
-      const events = buffer.split('\n\n')
-      buffer = events.pop() ?? ''
+      const { events, remainder } = parseSSEBuffer(buffer)
+      buffer = remainder
 
-      for (const rawEvent of events) {
-        const line = rawEvent.trim()
-        if (!line.startsWith('data:')) continue
-        const jsonStr = line.slice(5).trim()
-        if (!jsonStr) continue
-        try {
-          onEvent(JSON.parse(jsonStr) as ChatStreamEvent)
-        } catch {
-          // ignore a partial/malformed chunk rather than killing the stream
-        }
+      for (const event of events) {
+        onEvent(event)
       }
     }
   },

@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # if no .env / real API key is present in CI.
 os.environ.setdefault("GROQ_API_KEY", "test-key")
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
-os.environ.setdefault("SECRET_KEY", "test-secret-do-not-use-in-prod")
+os.environ.setdefault("SECRET_KEY", "test-secret-do-not-use-in-prod-12345")
 
 
 @pytest.fixture

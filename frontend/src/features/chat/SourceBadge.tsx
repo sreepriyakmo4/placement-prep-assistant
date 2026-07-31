@@ -1,7 +1,8 @@
 // Drop-in replacement for the SourceBadge in ChatPage.tsx
 // Shows filename, page number, heading, and colour-coded confidence
+// Distinguishes semantic (FAISS) matches from keyword (BM25) matches
 
-import { FileText, TrendingUp } from 'lucide-react'
+import { FileText, TrendingUp, Hash } from 'lucide-react'
 
 interface Source {
   filename: string
@@ -14,10 +15,11 @@ interface Source {
 }
 
 const confidenceColors: Record<string, string> = {
-  'Very High': 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
-  'High':      'text-blue-400   bg-blue-400/10   border-blue-400/20',
-  'Moderate':  'text-amber-400  bg-amber-400/10  border-amber-400/20',
-  'Low':       'text-gray-400   bg-gray-400/10   border-gray-400/20',
+  'Very High':     'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
+  'High':          'text-blue-400   bg-blue-400/10   border-blue-400/20',
+  'Moderate':      'text-amber-400  bg-amber-400/10  border-amber-400/20',
+  'Low':           'text-gray-400   bg-gray-400/10   border-gray-400/20',
+  'Keyword Match': 'text-violet-400 bg-violet-400/10 border-violet-400/20',
 }
 
 export function SourceBadge({ sources }: { sources: string }) {
@@ -37,6 +39,7 @@ export function SourceBadge({ sources }: { sources: string }) {
       </p>
       <div className="flex flex-col gap-2">
         {parsed.map((s, i) => {
+          const isKeywordMatch = s.confidence === 'Keyword Match'
           const confStyle = confidenceColors[s.confidence || 'Low'] || confidenceColors['Low']
           return (
             <div
@@ -45,7 +48,11 @@ export function SourceBadge({ sources }: { sources: string }) {
             >
               <div className="flex items-center justify-between gap-2 mb-1">
                 <span className="inline-flex items-center gap-1.5 text-xs text-gray-300 font-medium">
-                  <FileText size={10} className="text-accent flex-shrink-0" />
+                  {isKeywordMatch ? (
+                    <Hash size={10} className="text-violet-400 flex-shrink-0" />
+                  ) : (
+                    <FileText size={10} className="text-accent flex-shrink-0" />
+                  )}
                   <span className="truncate max-w-[160px]">{s.filename}</span>
                   {s.page_num && (
                     <span className="text-gray-600 flex-shrink-0">p.{s.page_num}</span>
@@ -53,7 +60,9 @@ export function SourceBadge({ sources }: { sources: string }) {
                 </span>
                 {s.confidence && (
                   <span className={`text-xs px-2 py-0.5 rounded-full border flex-shrink-0 ${confStyle}`}>
-                    {s.confidence} {s.similarity ? `· ${Math.round(s.similarity * 100)}%` : ''}
+                    {isKeywordMatch
+                      ? 'Keyword Match'
+                      : `${s.confidence}${s.similarity ? ` · ${Math.round(s.similarity * 100)}%` : ''}`}
                   </span>
                 )}
               </div>
