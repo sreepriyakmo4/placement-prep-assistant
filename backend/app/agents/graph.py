@@ -10,9 +10,11 @@ Graph structure:
         ↓ (good)               ↓ (poor confidence)
     response_node        query_rewrite_node
         ↓                      ↓
-       END               retrieval_node_retry
+       grounding_check_node    retrieval_node_retry
+        ↓                      ↓
+       END               response_node
                                ↓
-                         response_node
+                         grounding_check_node
                                ↓
                               END
 
@@ -24,7 +26,10 @@ Graph structure:
 - Confidence scoring based on cosine similarity
 - Graceful fallback to general knowledge when no relevant chunks found
 - Hybrid retrieval: FAISS (semantic) + BM25 (keyword) supplementing it
+- Post-generation grounding/hallucination check: an independent second LLM
+  call audits the generated answer's claims against the retrieved context
 """
+import json
 import logging
 from typing import TypedDict, List, Optional, Dict, Any
 
@@ -54,6 +59,11 @@ class AgentState(TypedDict):
     sources: List[Dict]
     chat_history: List[Dict]
     db: Any
+    grounding_chunks: List[Dict[str, Any]]   # the final, threshold-filtered
+                                              # chunks response_node actually
+                                              # used — what grounding_check_node
+                                              # audits the answer against
+    grounding: Optional[Dict[str, Any]]      # result of the grounding check
 
 
 # ── Node 1: Intent Router ──────────────────────────────────────────────────────
@@ -626,7 +636,113 @@ def response_node(state: AgentState) -> AgentState:
         for c in chunks
     ]
 
-    return {**state, "answer": answer, "sources": sources}
+    return {**state, "answer": answer, "sources": sources, "grounding_chunks": chunks}
+
+
+# ── Node 6: Grounding / Hallucination Check ────────────────────────────────────
+
+GROUNDING_SYSTEM = (
+    "You are a strict fact-checking auditor. Your only job is to verify whether "
+    "an answer's claims are supported by the given source context. You do not "
+    "answer questions, add information, or improve the answer — you only audit it."
+)
+
+GROUNDING_PROMPT = """SOURCE CONTEXT (the only material the answer is allowed to rely on):
+{context}
+
+ANSWER TO AUDIT:
+{answer}
+
+Instructions:
+1. Break the ANSWER down into its distinct factual claims (ignore filler phrases,
+   headings, and connective language — focus on substantive claims: definitions,
+   facts, numbers, examples, comparisons).
+2. For each claim, check whether it is directly supported by the SOURCE CONTEXT above.
+3. A claim counts as supported if the SOURCE CONTEXT states it or something that
+   directly implies it. Reasonable rephrasing of a supported idea still counts as
+   supported. A claim introducing new facts, numbers, or examples not present in
+   the SOURCE CONTEXT does NOT count as supported.
+4. Return ONLY valid JSON, no markdown, no extra text, in this exact shape:
+
+{{
+  "total_claims": <int>,
+  "supported_claims": <int>,
+  "unsupported_claims": ["<short quote or paraphrase of each unsupported claim>", ...]
+}}
+"""
+
+
+def _run_grounding_check(chunks: List[Dict[str, Any]], answer: str) -> Optional[Dict[str, Any]]:
+    """
+    Shared grounding-check logic used by both grounding_check_node (non-streaming
+    graph path) and run_agent_stream (streaming path, which doesn't go through
+    the compiled graph's nodes directly).
+
+    Only runs when there are chunks to audit against and an answer to audit —
+    a general-knowledge fallback answer has nothing to audit and is skipped
+    entirely (returns None).
+    """
+    if not chunks or not answer:
+        return None
+
+    # Cap each chunk's content so the audit prompt stays a reasonable size
+    context = "\n\n---\n\n".join(c["content"][:1500] for c in chunks)
+    prompt = GROUNDING_PROMPT.format(context=context, answer=answer)
+
+    try:
+        response = _client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": GROUNDING_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=800,
+            temperature=0.0,
+        )
+        raw = response.choices[0].message.content.strip()
+
+        if raw.startswith("```json"):
+            raw = raw[7:]
+        if raw.startswith("```"):
+            raw = raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+
+        result = json.loads(raw.strip())
+
+        total = int(result.get("total_claims", 0))
+        supported = int(result.get("supported_claims", 0))
+        unsupported = result.get("unsupported_claims", []) or []
+
+        score = round((supported / total) * 100, 1) if total > 0 else 100.0
+
+        return {
+            "score": score,
+            "total_claims": total,
+            "supported_claims": supported,
+            "unsupported_claims": unsupported[:10],
+        }
+
+    except Exception as e:
+        logger.warning(f"Grounding check failed, skipping: {e}")
+        return None
+
+
+def grounding_check_node(state: AgentState) -> AgentState:
+    """
+    Post-generation grounding/hallucination check (non-streaming graph node).
+
+    response_node's FIDELITY_INSTRUCTION prompt is a *soft* guardrail — it asks
+    the LLM to stay grounded in context, but nothing structurally stops it from
+    quietly inventing a detail anyway. This node adds a *second, independent*
+    LLM call whose only job is to audit the generated answer against the same
+    context and report what fraction of its claims are actually traceable back
+    to the source material.
+    """
+    chunks = state.get("grounding_chunks") or []
+    answer = state.get("answer", "")
+    grounding = _run_grounding_check(chunks, answer)
+    return {**state, "grounding": grounding}
 
 
 # ── Build Graph ────────────────────────────────────────────────────────────────
@@ -640,6 +756,7 @@ def build_graph():
     workflow.add_node("query_rewrite_node", query_rewrite_node)
     workflow.add_node("retrieval_node_retry", retrieval_node_retry)
     workflow.add_node("response_node", response_node)
+    workflow.add_node("grounding_check_node", grounding_check_node)
 
     # Entry point
     workflow.set_entry_point("intent_router")
@@ -664,8 +781,9 @@ def build_graph():
     workflow.add_edge("query_rewrite_node", "retrieval_node_retry")
     workflow.add_edge("retrieval_node_retry", "response_node")
 
-    # End
-    workflow.add_edge("response_node", END)
+    # Response → grounding check → End
+    workflow.add_edge("response_node", "grounding_check_node")
+    workflow.add_edge("grounding_check_node", END)
 
     return workflow.compile()
 
@@ -698,12 +816,15 @@ def run_agent(
         "sources": [],
         "chat_history": chat_history,
         "db": db,
+        "grounding_chunks": [],
+        "grounding": None,
     }
     result = graph.invoke(initial_state)
     return {
         "answer": result["answer"],
         "sources": result["sources"],
         "intent": result["intent"],
+        "grounding": result.get("grounding"),
     }
 
 
@@ -719,7 +840,7 @@ def run_agent_stream(
     Generator yielding dicts:
       {"type": "status",  "message": "..."}
       {"type": "chunk",   "content": "..."}
-      {"type": "done",    "answer": "...", "sources": [...], "intent": "..."}
+      {"type": "done",    "answer": "...", "sources": [...], "intent": "...", "grounding": {...}}
       {"type": "error",   "message": "..."}
     """
     state: AgentState = {
@@ -733,6 +854,8 @@ def run_agent_stream(
         "sources": [],
         "chat_history": chat_history,
         "db": db,
+        "grounding_chunks": [],
+        "grounding": None,
     }
 
     # Node 1: intent
@@ -852,9 +975,18 @@ def run_agent_stream(
         full_answer += err_text
         yield {"type": "chunk", "content": err_text}
 
+    # ── Grounding check (streaming path) ──
+    # Reuses the same shared helper the non-streaming graph node uses, so the
+    # audit logic lives in exactly one place. Only runs when chunks were
+    # actually presented as "from your notes" (matches grounding_check_node's
+    # behavior in the non-streaming path).
+    yield {"type": "status", "message": "🔎 Verifying answer against your notes..."}
+    grounding = _run_grounding_check(chunks, full_answer)
+
     yield {
         "type": "done",
         "answer": full_answer,
         "sources": sources,
         "intent": intent,
+        "grounding": grounding,
     }
